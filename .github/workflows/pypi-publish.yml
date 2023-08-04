@@ -1,0 +1,47 @@
+name: Publish distributions to PyPI or TestPyPI
+on:
+  push: # will trigger workflow when push event
+    branches:
+      - master
+
+jobs:
+  build-n-publish:
+    name: Build and publish Python distributions to PyPI or TestPyPI
+    runs-on: ubuntu-latest
+
+    # Not intended for forks.
+    if: github.repository == 'luntaixiax/luntai-ds'
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+
+    - name: Install twine
+      run: |
+        python -m pip install -U pip
+        python -m pip install -U twine wheel build
+
+    - name: Output installed packages
+      run: |
+        pip freeze --all
+    - name: Output dependency tree
+      run: |
+        pip install pipdeptree
+        pipdeptree
+
+    - name: Build a tar ball
+      run: |
+        python -m build
+
+    - name: Verify the distributions
+      run: twine check dist/*
+
+    - name: Publish distribution to PyPI
+      # The following upload action cannot be executed in the forked repository.
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        user: ${{ secrets.pypi_username }}
+        password: ${{ secrets.pypi_password }}
