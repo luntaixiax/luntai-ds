@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools >= 61.1.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luntaiDs"
+description = "Make Data Scientist life Easier Tool"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+  {name = "Ailun Qian (luntaixia)"},
+  {email = "ailunqian124@gmail.com"}
+]
+requires-python = ">=3.8"
+dependencies = [
+    "requests>=2.28.1",
+    "clickhouse-connect>=0.5.14",
+    "teradata>=15.10.0.21",
+    "teradatasql>=17.20.0.0",
+    "teradatasqlalchemy>=17.0.0.3",
+    "tqdm>=4.64.1",
+    "pandas>=1.3.5",
+    "pyarrow>=9.0.0",
+    "pyspark>=3.1.1",
+    "ortools>=9.5.2237",
+    "boto3>=1.26.76",
+    "openpyxl>=3.1.2",
+    "scikit-learn==1.0.2",
+    "imbalanced-learn>=0.10.1",
+    "mlxtend>=0.21.0",
+    "category_encoders>=2.6.0",
+    "lightgbm>=3.2.1",
+    "optbinning>=0.17.3",
+    "scikit-optimize>=0.9.0",
+    "optuna>=3.0.4",
+    "optuna-dashboard>=0.10.3",
+    "shap>=0.42.1",
+    "joblib>=1.1.1",
+    "uvicorn>=0.22.0",
+    "fastapi>=0.100.1",
+    "bokeh==2.4.3",
+    "evidently>=0.4.0",
+    "toml>=0.10.2"
+]
+dynamic = ["version"]
