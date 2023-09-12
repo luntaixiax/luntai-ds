@@ -27,7 +27,7 @@ class ClickHouse(baseDbInf):
 
     def getConnStr(self) -> str:
         # only used for sqlalchemy driver type
-        return f"{self.driver}://{self.ip}/{self.username}"
+        return f"{self.driver}://{self.username}:{self.password}@{self.ip}:{self.port}"
 
 
 class ClickhouseSchema:

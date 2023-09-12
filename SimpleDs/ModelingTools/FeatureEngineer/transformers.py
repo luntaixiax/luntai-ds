@@ -359,11 +359,12 @@ class BinaryConverter(BaseEstimator, TransformerMixin):
 
 
 class BucketCategValue(BaseEstimator, TransformerMixin):
-    def __init__(self, cols = None, threshold : float = 'auto', replace : bool = True, new_cols = None): # no *args or **kwargs
+    def __init__(self, cols = None, threshold : float = 'auto', handle_unknown: str = 'ignore', replace : bool = True, new_cols = None): # no *args or **kwargs
         """Reduce the number of values in given categorical variable, i.e., combine rare categories into 'Other' group
 
         :param cols: array-like, list of categorical columns to perform the value bucketing, if None, will use all columns
         :param threshold: a float number between 0-1, default 'auto' and will find best splitting threshold
+        :param handle_unknown: {'error', 'ignore', 'other'}, if ignore, will keep the unseen categ, if 'other', will combine to 'other' categ
         :param replace: will replace original column if replace = True, otherwise a new column will be created
         :param new_cols: the new columns names, only effective when replace = False
 
@@ -371,6 +372,7 @@ class BucketCategValue(BaseEstimator, TransformerMixin):
         """
         self.cols = cols
         self.threshold = threshold
+        self.handle_unknown = handle_unknown
         self.replace = replace
         self.new_cols = new_cols
 
@@ -383,8 +385,10 @@ class BucketCategValue(BaseEstimator, TransformerMixin):
             self.cols = X.columns
 
         self.tiny_cols = {}
+        self.known_cols = {}
         for c in self.cols:
             col = X[c]
+            self.known_cols[c] = col.unique()
 
             if self.threshold == 'auto':
                 freq_df = pd.DataFrame({
@@ -411,23 +415,40 @@ class BucketCategValue(BaseEstimator, TransformerMixin):
         return self  # nothing else to do
     
     @property
-    def threshold_(self):
+    def threshold_(self) -> dict:
         return self.thres_
 
     @property
     def combined_categories_(self) -> Dict[str, np.ndarray]:
         # for each columns, which are the combined categories
         return self.tiny_cols
+    
+    @property
+    def known_categories_(self) -> Dict[str, np.ndarray]:
+        # for each columns, which are the combined categories
+        return self.known_cols
 
     def transform(self, X, y = None):
         X = X.copy()
         for i, c in enumerate(self.cols):
             if self.replace:
                 X.loc[X[c].isin(self.tiny_cols[c]), c] = 'Other'
+                if self.handle_unknown == 'other':
+                    X.loc[~X[c].isin(self.known_cols[c]), c] = 'Other'
+                elif self.handle_unknown == 'error':
+                    unknowns = X.loc[~X[c].isin(self.known_cols[c]), c]
+                    if len(unknowns) > 0:
+                        raise ValueError(f"Unknown category(s): {unknowns.unique()} encountered while param handle_unknown is set to `error`")
             else:
                 new_col = self.new_cols[i]
                 X.loc[X[c].isin(self.tiny_cols[c]), new_col] = 'Other'
                 X.loc[~X[c].isin(self.tiny_cols[c]), new_col] = X.loc[~X[c].isin(self.tiny_cols[c]), c]
+                if self.handle_unknown == 'other':
+                    X.loc[~X[c].isin(self.known_cols[c]), new_col] = 'Other'
+                elif self.handle_unknown == 'error':
+                    unknowns = X.loc[~X[c].isin(self.known_cols[c]), c]
+                    if len(unknowns) > 0:
+                        raise ValueError(f"Unknown category(s): {unknowns.unique()} encountered while param handle_unknown is set to `error`")
         return X
 
     def get_feature_names_out(self, input_features=None):
