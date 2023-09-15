@@ -127,15 +127,18 @@ class CategStat(_BaseStat):
                 probs = list(probs * (1 - self.missing_.perc))
                 probs.append(self.missing_.perc)
 
-            return pd.Series(
+            s = pd.Series(
                 rng.choice(
                     a = choices,
                     size = size,
                     p = probs
                 ),
                 name = self.colname_,
-                dtype = 'int' if self.int_dtype_ else None
             )
+            if self.int_dtype_:
+                s = s.astype('Int64')
+            return s
+            
         else:
             raise Exception("Not fitted error")
 
@@ -388,8 +391,7 @@ class NumericStat(_BaseStat):
             return pd.Series(
                 values,
                 name = self.colname_,
-                dtype = 'float'
-            )
+            ).astype(dtype='Float64')
         else:
             raise Exception("Not fitted error")
 
