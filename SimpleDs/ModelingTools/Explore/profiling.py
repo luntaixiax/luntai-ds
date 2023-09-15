@@ -54,7 +54,7 @@ class CategStat(_BaseStat):
     def fit(self, vector: pd.Series = None):
         self.colname_ = vector.name
         # total number of records
-        self.total_ = vector.count().item()
+        self.total_ = len(vector)
         # missing rate
         missing = vector.isna()
         self.missing_ = StatVar(value=missing.sum().item(), perc=missing.mean())
@@ -206,7 +206,7 @@ class NumericStat(_BaseStat):
     def fit(self, vector: pd.Series = None):
         self.colname_ = vector.name
         # total number of records
-        self.total_ = vector.count().item()
+        self.total_ = len(vector)
         # missing rate
         missing = vector.isna()
         self.missing_ = StatVar(value=missing.sum().item(), perc=missing.mean())
