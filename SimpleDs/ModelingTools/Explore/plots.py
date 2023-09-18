@@ -1,13 +1,17 @@
 import numpy as np
 import pandas as pd
+from typing import List, Dict
 from itertools import cycle
 from bokeh.plotting import figure, show, Figure
 from bokeh.models import ColumnDataSource, Dropdown, HoverTool, TableColumn, DataTable, NumeralTickFormatter, Range1d, \
-    LinearAxis, Legend, CustomJS, Slider, ScientificFormatter, StringFormatter
+    LinearAxis, Legend, CustomJS, Slider, ScientificFormatter, StringFormatter, LinearColorMapper, ColorBar, BasicTicker
 from bokeh.models import Panel, Tabs, DateFormatter, Span, LegendItem, Legend, Div, Panel, Tabs
 from bokeh.layouts import column, row, layout, gridplot
-from bokeh.palettes import Dark2_5, Dark2_8
-from ModelingTools.Explore.profiling import StatVar, QuantileStat, DescStat, NumericStat, CategStat
+from bokeh.palettes import Dark2_5, Dark2_8, Magma256
+from bokeh.transform import factor_cmap, transform
+from bokeh.io import save, output_file
+from ModelingTools.Explore.profiling import StatVar, QuantileStat, DescStat, NumericStat, CategStat, TabularStat, \
+        CategUniVarClfTargetCorr, NumericUniVarClfTargetCorr, TabularUniVarClfTargetCorr
 
 def _sort_combine(arr: pd.Series, max_item:int = 10) -> pd.Series:
     arr = arr.sort_values(ascending = False)
@@ -59,7 +63,7 @@ def chart_barchart(bar_arr: pd.Series, max_bar:int = 10, size: tuple = (500, 400
     perc = bar_arr / bar_arr.sum()
     color = cycle(Dark2_8)
     bar_dict = pd.DataFrame({
-        'label' : bar_arr.index,
+        'label' : bar_arr.index.astype('string').tolist(),
         'value' : bar_arr.values,
         'perc' : perc
     })
@@ -91,7 +95,7 @@ def chart_histogram(bins_edges: np.ndarray, hists: np.ndarray, quantile_stat: Qu
     source_hist_cali = ColumnDataSource(distr_bins)
     
     p = figure(plot_width=size[0], plot_height=size[1], title=title,
-                       x_axis_label='Value', y_axis_label='Counts')
+        x_axis_label='Value', y_axis_label='Counts')
     
     # optional hareas
     if desc_stat is not None:
@@ -190,7 +194,7 @@ def numeric_count_summary(total: int, missing: StatVar, zeros: StatVar, inf_pos:
     rows = column([
             row(
                 [
-                    metric_div(valid, valid_perc, 'Valid', back_color = 'ivory'),
+                    metric_div(valid, valid_perc, 'Valid', threshold_p = 1, back_color = 'ivory'),
                     metric_div(missing.value, missing.perc, 'Missing', threshold_p = 0.1, back_color = 'gainsboro'),
                     metric_div(zeros.value, zeros.perc, 'Zeros', threshold_p = 0.1, back_color = 'azure'),
                 ],  
@@ -214,7 +218,7 @@ def categ_count_summary(total: int, missing: StatVar, unique: StatVar) -> layout
     valid_perc = 1 - missing.perc
     rows = row(
         [
-            metric_div(valid, valid_perc, 'Valid', back_color = 'ivory', threshold_p = 0.1),
+            metric_div(valid, valid_perc, 'Valid', threshold_p = 1, back_color = 'ivory'),
             metric_div(missing.value, missing.perc, 'Missing', threshold_p = 0.1, back_color = 'gainsboro'),
             metric_div(unique.value, unique.perc, 'Unique', back_color = 'aquamarine'),
         ],  
@@ -292,8 +296,184 @@ def table_stat(stats: dict) -> DataTable:
     )
     return data_table
 
+def chart_boxplot(p_x_y: pd.DataFrame, xname:str = 'x', yname:str = 'y', 
+        size: tuple = (500, 400), title: str='Boxplot') -> Figure:
+    
+    p_x_y['y'] = p_x_y.index.astype(str)
+    data_source = ColumnDataSource(p_x_y)
 
-def plot_numeric(nst: NumericStat) -> layout:
+    p = figure(plot_width=size[0], plot_height=size[1],
+            title=title, x_range=data_source.data['y'],
+            x_axis_label=yname, y_axis_label=xname)
+
+
+    # boxes
+    p.vbar(x='y', width=0.7, bottom='median', top='q3', 
+        source=data_source, fill_color="#E08E79", line_color="black")
+    p.vbar(x='y', width=0.7, bottom='q1', top='median', 
+        source=data_source, fill_color="#3B8686", line_color="black")
+    # whiskers (almost-0 height rects simpler than segments)
+    p.rect(x='y', y='rbound', width = 0.2, height = 0.005, 
+        source=data_source, line_color="black")
+    p.rect(x='y', y='lbound', width = 0.2, height = 0.005, 
+        source=data_source, line_color="black")
+    p.rect(x='y', y='mean', width = 0.7, height = 0.005, 
+        source=data_source, line_color="#B63B3B", fill_color="#B63B3B",
+        legend_label='mean')
+    # stems
+    p.segment(x0='y', y0='rbound', x1='y', y1='q3', 
+        source=data_source, line_color="black",
+    )
+    p.segment(x0='y', y0='lbound', x1='y', y1='q1', 
+        source=data_source, line_color="black",
+    )
+
+    p.add_tools(HoverTool(tooltips=[
+        ("label", "@y"), ("mean", "@mean"), ("lbound", "@lbound"), ("q1", "@q1"),
+        ("median", "@median"), ("q3", "@q3"), ("rbound", "@rbound")
+    ]))
+
+    p.xgrid.grid_line_color = None
+
+    #p.yaxis.major_label_orientation = "vertical"
+    p.yaxis.formatter = NumeralTickFormatter(format='0.0a')  # million
+    
+    return p
+
+def chart_optbin_multiclass(bin_r: pd.DataFrame, ylabels: List[str] = None, xname:str = 'x', yname:str = 'y',
+        size: tuple = (1000, 500), title: str = "Realized Event vs. Bins") -> Figure:
+
+    """Optimal binning result chart
+
+    :param bin_r: results returned by optbin.binning_table.build(add_totals=False)
+                    columns [Bin, Count, Count (%), Event_x, Event rate_y]
+    :param ylabels: if given, use this list to identify the columns
+    :param size: figsize
+    :return:
+    """
+    # extract target labels
+    if ylabels is None:
+        ylabels = bin_r.columns[bin_r.columns.str.startswith('Event_rate_')].str.replace('Event_rate_', '').tolist()
+    
+    color = cycle(Dark2_8)
+    colors = [next(color) for _ in ylabels]
+    
+    source_bin = ColumnDataSource(bin_r)
+
+    fig_bin = figure(plot_width=size[0], plot_height=size[1],
+        x_axis_label = xname, y_axis_label = yname,
+        x_range=source_bin.data['Bin'], title = title)
+
+    fig_bin.add_layout(Legend(), 'right')
+    fig_bin.vbar_stack(
+        [f"Event_{y_label}" for y_label in ylabels], # ['Event_0', 'Event_1'] 
+        legend_label = ylabels,
+        source = source_bin, x = 'Bin', width = 0.8,
+        line_color = 'black', 
+        color = colors
+    )
+
+    fig_bin.yaxis.formatter = NumeralTickFormatter(format='0.0a')  # million
+
+    # add event rate to secondary axis
+    #fig_bin.y_range = Range1d(start = 0, end = 1)
+    fig_bin.extra_y_ranges = {"EVENT_RT_AXIS": Range1d(start=0, end = 1.2)}
+    fig_bin.add_layout(LinearAxis(y_range_name="EVENT_RT_AXIS"), 'right')
+    
+    for i, ylabel in enumerate(ylabels):
+        fig_bin.line(x='Bin', y=f'Event_rate_{ylabel}', source=source_bin, 
+            y_range_name='EVENT_RT_AXIS', width=3,
+            legend_label=f'Event_rate_{ylabel}', color=colors[i]
+        )
+        fig_bin.circle(x='Bin', y=f'Event_rate_{ylabel}', source=source_bin, 
+            y_range_name='EVENT_RT_AXIS', color='black',
+            fill_color="white", size=10
+        )
+    
+    fig_bin.add_tools(HoverTool(tooltips=[
+        ("Bin", "@Bin"), ("Count", "@Count"), ("Count (%)", "@{Count (%)}{(0.000)}")] 
+        + [(ylabel, "@{Event_" + ylabel + "}") for ylabel in ylabels] 
+        + [(f"Event_rate_{ylabel}", "@{Event_rate_" + ylabel + "}") for ylabel in ylabels]
+    ))
+    fig_bin.xaxis.major_label_orientation = "vertical"
+    fig_bin.y_range = Range1d(start = 0, end = bin_r['Count'].max() * 1.2)
+
+    return fig_bin
+
+def chart_segment_group_count(seg_df: Dict[str, pd.DataFrame], group_name:str = 'y', agg_name:str = 'x', 
+        size: tuple = (500, 500), title: str = "Stacking Segment Count by Group") -> Figure:
+    
+    seg = pd.concat([s['count'].rename(group) for group, s in seg_df.items()], axis = 1).T
+    seg.columns = seg.columns.astype('str')
+    aggs = seg.columns.astype('str').tolist()
+    seg[group_name] = seg.index.astype(str)
+    
+    color = cycle(Dark2_8)
+    colors = [next(color) for _ in aggs]
+    
+    source_bin = ColumnDataSource(seg)
+
+    p = figure(plot_width=size[0], plot_height=size[1],
+        x_axis_label = group_name, y_axis_label = agg_name,
+        x_range=source_bin.data[group_name], title = title)
+
+    p.add_layout(Legend(), 'right')
+    p.vbar_stack(
+        aggs,
+        x = group_name,
+        source = source_bin,
+        legend_label = aggs,
+        width = 0.8,
+        line_color = 'black', 
+        color = colors
+    )
+
+    p.yaxis.formatter = NumeralTickFormatter(format='0.0a')  # million
+    
+    p.add_tools(HoverTool(tooltips=[
+        ("group", f"@{group_name}")]
+        + [(agglabel, "@{" + agglabel + "}") for agglabel in aggs] 
+    ))
+    
+    return p
+
+def chart_segment_group_perc(seg_df: Dict[str, pd.DataFrame], group_name:str = 'y', agg_name:str = 'x', 
+        size: tuple = (500, 500), title: str = "Segment Distribution by Group") -> Figure:
+    
+    seg = pd.concat([s['perc'].rename(group) for group, s in seg_df.items()], axis = 1).T
+    seg.columns = seg.columns.astype('str')
+    aggs = seg.columns.astype('str').tolist()
+    seg[group_name] = seg.index.astype(str)
+    
+    color = cycle(Dark2_8)
+    colors = [next(color) for _ in aggs]
+    
+    source_bin = ColumnDataSource(seg)
+
+    p = figure(plot_width=size[0], plot_height=size[1],
+        x_axis_label = group_name, y_axis_label = agg_name,
+        x_range=source_bin.data[group_name], title = title)
+
+    p.add_layout(Legend(), 'right')
+    
+    for i, agg in enumerate(aggs):
+        p.line(x=group_name, y=agg, source=source_bin, 
+            width=3, legend_label=agg, color=colors[i]
+        )
+        p.circle(x=group_name, y=agg, source=source_bin, 
+            color='black', fill_color="white", size=10
+        )
+
+    p.yaxis.formatter = NumeralTickFormatter(format='0.00%')  # million
+    
+    p.add_tools(HoverTool(tooltips=[
+        ("group", f"@{group_name}")]
+        + [(agglabel, "@{" + agglabel +"}{(0.00%)}") for agglabel in aggs] 
+    ))
+    
+    return p
+
+def plot_numeric(nst: NumericStat, html_path: str = None) -> column:
     summary = numeric_count_summary(
         nst.total_, 
         nst.missing_, 
@@ -383,8 +563,7 @@ def plot_numeric(nst: NumericStat) -> layout:
             Tabs(tabs=tabs_xtreme),
         ])
 
-
-    return column([
+    result = column([
         row([
             column([
                 summary, 
@@ -400,10 +579,16 @@ def plot_numeric(nst: NumericStat) -> layout:
         Tabs(tabs=tabs_hist),
     ],
     #sizing_mode = 'fixed'
-)
+    )
+    
+    if html_path:
+        output_file(html_path)
+        save(result)
+        
+    return result
 
 
-def plot_categ(nst: CategStat) -> layout:
+def plot_categ(nst: CategStat, html_path: str = None) -> row:
     summary = categ_count_summary(
         nst.total_, 
         nst.missing_, 
@@ -419,7 +604,7 @@ def plot_categ(nst: CategStat) -> layout:
         size = (600, 640)
     )
 
-    return row([
+    result = row([
         column([
             summary,
             donut
@@ -430,3 +615,238 @@ def plot_categ(nst: CategStat) -> layout:
     ],
     sizing_mode = 'stretch_width'
     )
+    
+    if html_path:
+        output_file(html_path)
+        save(result)
+        
+    return result
+
+def plot_numeric_clf_target_corr(nuct: NumericUniVarClfTargetCorr, html_path: str = None) -> row:
+    
+    tabs_x_y = Tabs(
+        tabs = [
+            Panel(
+                child = chart_boxplot(
+                    nuct.p_x_y_['origin'],
+                    xname=nuct.colname_, 
+                    yname=nuct.yname_,
+                    size=(400, 500),
+                    title = "P(x|y) - Feature Distribution By Target"
+                ),
+                title="Origin"
+            ),
+            Panel(
+                child = chart_boxplot(
+                    nuct.p_x_y_['log'],
+                    xname=nuct.colname_, 
+                    yname=nuct.yname_,
+                    size=(400, 500),
+                    title = "P(x|y) - Feature Distribution By Target"
+                ),
+                title="Log"
+            )
+        ]
+    )
+    
+    fig_y_x = chart_optbin_multiclass(
+        nuct.p_y_x_,
+        ylabels = nuct.ylabels_,
+        xname=nuct.colname_, 
+        yname=nuct.yname_,
+        size=(1000, 500),
+        title = "P(y|x) - Event Rate by Bucketized Feature"
+    )
+    
+    
+    result = row([fig_y_x, tabs_x_y], 
+        sizing_mode='stretch_height')
+    
+    if html_path:
+        output_file(html_path)
+        save(result)
+    return result
+    
+    
+def plot_categ_clf_target_corr(cuct: CategUniVarClfTargetCorr, html_path: str = None) -> row:
+    tabs_x_y = Tabs(
+        tabs = [
+            Panel(
+                child = chart_segment_group_count(
+                    cuct.p_x_y_,
+                    group_name=cuct.yname_, 
+                    agg_name=cuct.colname_,
+                    size=(600, 500),
+                    title = "P(x|y) - Category Count By Target"
+                ),
+                title="Count"
+            ),
+            Panel(
+                child = chart_segment_group_perc(
+                    cuct.p_x_y_,
+                    group_name=cuct.yname_, 
+                    agg_name=cuct.colname_,
+                    size=(600, 500),
+                    title = "P(x|y) - Category Distribution By Target"
+                ),
+                title="Percentage"
+            )
+        ]
+    )
+    
+    tabs_y_x = Tabs(
+        tabs = [
+            Panel(
+                child = chart_segment_group_count(
+                    cuct.p_y_x_,
+                    group_name=cuct.colname_, 
+                    agg_name=cuct.yname_,
+                    size=(800, 500),
+                    title = "P(y|x) - Event Count by Feature Categories"
+                ),
+                title="Count"
+            ),
+            Panel(
+                child = chart_segment_group_perc(
+                    cuct.p_y_x_,
+                    group_name=cuct.colname_, 
+                    agg_name=cuct.yname_,
+                    size=(800, 500),
+                    title = "P(x|y) - Event Rate by Feature Categories"
+                ),
+                title="Percentage"
+            )
+        ]
+    )
+    result = row([tabs_y_x, tabs_x_y], 
+        sizing_mode='stretch_height')
+    
+    if html_path:
+        output_file(html_path)
+        save(result)
+    return result
+
+def table_summary(ts: TabularStat) -> row:
+    num_numeric = len(list(filter(lambda c: isinstance(c, NumericStat), ts.configs.values())))
+    broad_categs = list(filter(lambda c: isinstance(c, CategStat), ts.configs.values()))
+    num_binary = len(list(filter(lambda c: c.binary_ is True, broad_categs)))
+    num_categs = len(list(filter(lambda c: c.binary_ is False, broad_categs)))
+    total = len(ts.configs)
+    rows = row(
+        [
+            metric_div(num_numeric, num_numeric / total, 'Numerical Features', threshold_p = 1),
+            metric_div(num_binary, num_binary / total, 'Binary Features', threshold_p = 1),
+            metric_div(num_categs, num_categs / total, 'Categorical Features', threshold_p = 1),
+        ],  
+        sizing_mode='stretch_both'
+    )
+    return rows
+
+def plot_table_profiling(ts: TabularStat, html_path: str = None) -> column:
+    figs = [
+        Div(
+            text = """
+                <h1>Overview</h1>
+            """
+        ),
+        table_summary(ts)
+    ]
+    for col, config in ts.configs.items():
+        if isinstance(config, NumericStat):
+            fig = plot_numeric(config)
+        elif isinstance(config, CategStat):
+            fig = plot_categ(config)
+
+        figs.append(
+            Div(
+                text = f"""
+                    <h2 style="color:#395687">{col}</h2>
+                """
+            )
+        )
+        figs.append(fig)
+    
+    result = column(figs, sizing_mode = 'stretch_both')
+    
+    if html_path:
+        output_file(html_path)
+        save(result)
+        
+    return result
+
+def plot_uni_clf_target_corr(tuvct: TabularUniVarClfTargetCorr, html_path: str = None) -> column:
+    figs = [
+        Div(
+            text = """
+                <h1>Univaraite Feature-Target Correlation for Classification</h1>
+            """
+        )
+    ]
+    for col, config in tuvct.configs.items():
+        if isinstance(config, NumericUniVarClfTargetCorr):
+            fig = plot_numeric_clf_target_corr(config)
+        elif isinstance(config, CategUniVarClfTargetCorr):
+            fig = plot_categ_clf_target_corr(config)
+
+        figs.append(
+            Div(
+                text = f"""
+                    <h2 style="color:#395687">{col}</h2>
+                """
+            )
+        )
+        figs.append(fig)
+    
+    result = column(figs, sizing_mode = 'stretch_both')
+    
+    if html_path:
+        output_file(html_path)
+        save(result)
+        
+    return result
+
+
+####### Other plots
+
+def chart_gridplot(grid: pd.DataFrame, reverse_color:bool = False, size: tuple = (1000, 600), title: str ='Grid Plot') -> layout:
+    grid_flat = grid.stack().rename("value").reset_index()
+
+    grid_flat_source = ColumnDataSource(grid_flat)
+    mapper_color = LinearColorMapper(palette=Magma256[::-1] if reverse_color else Magma256)
+    p = figure(
+        plot_width=size[0], plot_height=size[1], title=title,
+        x_axis_label=grid.columns.name, 
+        y_axis_label=grid.index.name,
+        x_range = grid.columns.tolist(), 
+        y_range = grid.index.tolist()
+    )
+    p.rect(
+        x=grid.columns.name,
+        y=grid.index.name,
+        width=1,
+        height=1,
+        source=grid_flat_source,
+        line_color=None,
+        fill_color=transform('value', mapper_color)
+    )
+
+    p.line(x = grid.index.tolist(), y = grid.columns.tolist(), 
+           color='red', width=2, line_dash="4 4")
+
+    # Add legend
+    color_bar = ColorBar(
+        color_mapper=mapper_color,
+        location=(0, 0),
+        ticker=BasicTicker(desired_num_ticks=256)
+    )
+
+    p.xaxis.major_tick_line_color = None  # turn off x-axis major ticks
+    p.xaxis.minor_tick_line_color = None  # turn off x-axis minor ticks
+    p.yaxis.major_tick_line_color = None  # turn off y-axis major ticks
+    p.yaxis.minor_tick_line_color = None  # turn off y-axis minor ticks
+    p.xaxis.major_label_orientation = "vertical"
+    p.add_layout(color_bar, 'right')
+    p.add_tools(HoverTool(tooltips=[(grid.index.name, f"@{grid.index.name}"), (grid.columns.name, f"@{grid.columns.name}")
+        , ("value", "@value")]))
+
+    return p

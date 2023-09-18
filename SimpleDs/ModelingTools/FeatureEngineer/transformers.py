@@ -1477,7 +1477,7 @@ def plot_feature_dendrogram(X: pd.DataFrame, distance_func: Callable[[np.ndarray
     plt.title(f'Dendrogram (metric = {metric}, method = {method})')
 
     link = linkage(feature_dist, method = method, metric = metric)
-    dg = dendrogram(link, labels = features)
+    dg = dendrogram(link, labels = features, orientation='right')
 
 class SelectKBestByCluster(SelectorMixin, BaseEstimator):
     def __init__(self, k: int = 1, scorer: _BaseFilter = None, cluster_kernal: ClusterMixin = None, distance_func: Callable[[np.ndarray], np.ndarray] = None):
@@ -1521,7 +1521,11 @@ class SelectKBestByCluster(SelectorMixin, BaseEstimator):
     @property
     def scores_(self) -> pd.Series:
         # all scores by scorer, also retain unselected features
-        return pd.Series(self.scorer.scores_, index = self.scorer.feature_names_in_, name='Scores')
+        if isinstance(self.scorer, SelectThreshold):
+            scores = self.scorer.pvalues_ if self.scorer.use_p else self.scorer.scores_
+        else:
+            scores = self.scorer.scores_
+        return pd.Series(scores, index = self.scorer.feature_names_in_, name='Scores')
 
     @property
     def feature_clusters_(self) -> pd.Series:

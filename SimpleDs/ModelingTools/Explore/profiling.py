@@ -4,7 +4,17 @@ from typing import Union, Dict, List, Literal
 from collections import namedtuple
 from scipy.special import exp10
 from numpy import expm1, log1p, log10
-from scipy.stats import rv_histogram
+from scipy.stats import rv_histogram, chi2_contingency
+from optbinning import MulticlassOptimalBinning
+from sklearn.base import BaseEstimator
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.feature_selection import mutual_info_classif
+from sklearn.impute import SimpleImputer
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from category_encoders.ordinal import OrdinalEncoder
+from category_encoders.count import CountEncoder
+from ModelingTools.CustomModel.linear import LinearClfStatsModelWrapper
 from ModelingTools.utils.parallel import parallel_run, delayer
 from CommonTools.accessor import toJSON, loadJSON
 
@@ -32,7 +42,7 @@ XtremeStat = namedtuple(
 )
 
 class _BaseStat:
-    def fit(self, vector: pd.Series = None):
+    def fit(self, vector: pd.Series):
         raise NotImplemented("")
 
     def to_dict(self) -> dict:
@@ -51,7 +61,7 @@ class CategStat(_BaseStat):
         self.int_dtype_ = int_dtype
         self.binary_ = binary
 
-    def fit(self, vector: pd.Series = None):
+    def fit(self, vector: pd.Series):
         self.colname_ = vector.name
         # total number of records
         self.total_ = len(vector)
@@ -206,7 +216,7 @@ class NumericStat(_BaseStat):
         self.xtreme_method_ = xtreme_method
         self.fitted_ = False
 
-    def fit(self, vector: pd.Series = None):
+    def fit(self, vector: pd.Series):
         self.colname_ = vector.name
         # total number of records
         self.total_ = len(vector)
@@ -396,35 +406,216 @@ class NumericStat(_BaseStat):
             raise Exception("Not fitted error")
 
 
-class TabularStat:
-    def __init__(self, configs: Dict[str, _BaseStat], n_jobs:int = 1):
-        self.configs = configs
-        self.n_jobs = n_jobs
 
-    def fit(self, df: pd.DataFrame):
-        # support multi-processor running
-        cols = self.configs.keys()
-        jobs = (self._fit_one(col, df[col]) for col in cols)
-        stats = parallel_run(jobs, n_jobs = self.n_jobs)
-        self.configs = {col: stat for col, stat in zip(cols, stats)}
-
-    @delayer
-    def _fit_one(self, col: str, vector: pd.Series) -> _BaseStat:
-        stat = self.configs[col]
-        stat.fit(vector)
-        return stat
     
-    def generate(self, size: int = 100, seed: int = None, ignore_na:bool = False) -> pd.DataFrame:
-        return pd.concat(
-            [config.generate(
-                size = size,
-                seed = seed,
-                ignore_na = ignore_na
-            ) for col, config in self.configs.items()],
-            axis = 1
+######### Univaraite Feature-Target correlation
+
+def _combine_x_y(x: pd.Series, y: pd.Series, dropna: bool = True, combine_x_categ:bool = False) -> pd.DataFrame:
+    df = pd.DataFrame({'x' : x.values, 'y' : y.astype('str').values})
+    if dropna:
+        df = df.dropna(axis = 0, how = 'any')
+    # categorical variable for x only:
+    if combine_x_categ:
+        vc = df['x'].value_counts(normalize = True)
+        others = vc.iloc[20:].index  # only keep top 20 categories
+        df.loc[df['x'].isin(others), 'x'] = 'Others'
+    
+    return df
+
+class _BaseUniVarClfTargetCorr:
+    def get_meta(self, x: pd.Series, y: pd.Series):
+        self.colname_ = x.name
+        self.yname_ = y.name
+        self.ylabels_ = y.unique().astype('str').tolist()
+    
+    def fit(self, x: pd.Series, y: pd.Series):
+        raise NotImplementedError("")
+    
+    def to_dict(self) -> dict:
+        raise NotImplementedError("")
+    
+    @classmethod
+    def from_dict(cls, d: dict):
+        raise NotImplementedError("")
+
+class CategUniVarClfTargetCorr(_BaseUniVarClfTargetCorr):
+    def __init__(self, ):
+        self.fitted_ = False
+    
+    def fit(self, x: pd.Series, y: pd.Series):
+        self.get_meta(x, y)
+        
+        df = _combine_x_y(
+            x, 
+            y, 
+            dropna = True, 
+            combine_x_categ = True # combine x's categories to be less than 20
         )
         
+        # categorical:  p(x | y)
+        self.p_x_y_ = {}
+        for y in df['y'].unique():
+            cs = df.loc[df['y'] == y, ['x']].groupby('x').size()
+            d = pd.DataFrame({
+                    'count' : cs.values, 
+                    'perc' : cs  / cs.sum()
+                }, 
+                index = cs.index
+            )
+            self.p_x_y_[y] = d.fillna(0) #.to_dict(orient = 'index')
+            
+        # categorical:  p(y | x)  prob (event rate when binary clf) by category
+        self.p_y_x_ = {}
+        for x in df['x'].unique():
+            cs = df.loc[df['x'] == x, ['y']].groupby('y').size()
+            d = pd.DataFrame({
+                    'count' : cs.values, 
+                    'perc' : cs  / cs.sum()
+                }, 
+                index = cs.index
+            )
+            self.p_y_x_[x] = d.fillna(0) #.to_dict(orient = 'index')
+            
+        self.fitted_ = True
+            
+    def to_dict(self) -> dict:
+        if self.fitted_:
+            return dict(
+                colname = self.colname_,
+                yname = self.yname_,
+                ylabels = self.ylabels_,
+                attr = dict(),
+                p_x_y = {
+                    k: v.to_dict(orient = 'index')
+                    for k, v in self.p_x_y_.items() 
+                },
+                p_y_x = {
+                    k: v.to_dict(orient = 'index')
+                    for k, v in self.p_y_x_.items() 
+                },
+            )
+        else:
+            raise Exception("Not fitted error")
+        
+    @classmethod
+    def from_dict(cls, d: dict):
+        c = cls(
+            **d['attr']
+        )
+        c.colname_ = d['colname']
+        c.yname_ = d['yname']
+        c.ylabels_ = d['ylabels']
+        
+        c.p_x_y_ = {
+            k: pd.DataFrame.from_dict(v, orient = 'index')
+            for k, v in d['p_x_y'].items()
+        }
+        c.p_y_x_ = {
+            k: pd.DataFrame.from_dict(v, orient = 'index')
+            for k, v in d['p_y_x'].items()
+        }
+        return c
 
+class NumericUniVarClfTargetCorr(_BaseUniVarClfTargetCorr):
+    def __init__(self, ):
+        self.fitted_ = False
+    
+    def fit(self, x: pd.Series, y: pd.Series):
+        self.get_meta(x, y)
+        
+        df = _combine_x_y(
+            x, 
+            y, 
+            dropna = False,
+        )
+        
+        # numerical:  p(x | y)  distribution by target (boxplot)
+        t = {'origin' : {}, 'log' : {}}
+        for y in df['y'].unique():
+            v = df.loc[df['y'] == y, 'x']
+            ns = NumericStat(
+                setaside_zero=False, 
+                log_scale=True, 
+                xtreme_method='iqr', 
+                bins=100
+            )
+            ns.fit(v)
+            
+            t['origin'][y] = {
+                'lbound': ns.xtreme_stat_.lbound,
+                'q1' : ns.stat_quantile_.q1,
+                'mean' : ns.stat_descriptive_.mean,
+                'median' : ns.stat_quantile_.median,
+                'q3' : ns.stat_quantile_.q3,
+                'rbound': ns.xtreme_stat_.rbound,
+            }
+            t['log'][y] = {
+                'lbound': ns.xtreme_stat_log_.lbound,
+                'q1' : ns.stat_quantile_log_.q1,
+                'mean' : ns.stat_descriptive_log_.mean,
+                'median' : ns.stat_quantile_log_.median,
+                'q3' : ns.stat_quantile_log_.q3,
+                'rbound': ns.xtreme_stat_log_.rbound,
+            }
+            
+        self.p_x_y_ = {
+            'origin' : pd.DataFrame.from_dict(t['origin'], orient='index'),
+            'log' : pd.DataFrame.from_dict(t['log'], orient='index')
+        }
+            
+            
+        # numerical:  p(y | x)  prob (event rate if binary clf) by bucketized x
+        mob = MulticlassOptimalBinning(
+            prebinning_method = 'quantile',
+            monotonic_trend = 'auto',
+            max_n_prebins = 20,
+            min_prebin_size = 0.05,
+        )
+        mob.fit(x = df['x'], y = df['y'])
+        self.p_y_x_ = mob.binning_table.build(add_totals=False)
+        
+        self.fitted_ = True
+        
+    def to_dict(self) -> dict:
+        if self.fitted_:
+            return dict(
+                colname = self.colname_,
+                yname = self.yname_,
+                ylables = self.ylabels_,
+                attr = dict(),
+                p_x_y = {
+                    k: v.to_dict(orient = 'index')
+                    for k, v in self.p_x_y_.items() 
+                },
+                p_y_x = (
+                    self.p_y_x_
+                    .replace({np.nan: None})
+                    .to_dict(orient = 'records')
+                ),
+            )
+        else:
+            raise Exception("Not fitted error")
+        
+    @classmethod
+    def from_dict(cls, d: dict):
+        c = cls(
+            **d['attr']
+        )
+        c.colname_ = d['colname']
+        c.yname_ = d['yname']
+        c.ylabels_ = d['ylabels']
+        
+        c.p_x_y_ = {
+            k: pd.DataFrame.from_dict(v, orient = 'index')
+            for k, v in d['p_x_y'].items()
+        }
+        c.p_y_x_ = pd.DataFrame.from_records(d['p_y_x'])
+        return c
+
+
+#########  Tabular
+
+class _BaseTabularSerializable:
     def to_dict(self) -> dict:
         rs = {}
         for col, config in self.configs.items():
@@ -451,4 +642,169 @@ class TabularStat:
     def load(cls, js_path):
         js = loadJSON(file = js_path)
         return cls.from_dict(js)
+
+
+class TabularStat(_BaseTabularSerializable):
+    def __init__(self, configs: Dict[str, _BaseStat], n_jobs:int = 1):
+        self.configs = configs
+        self.n_jobs = n_jobs
+        
+    def get_categ_cols(self) -> List[str]:
+        return [col for col, schema in self.configs.items() if isinstance(schema, CategStat)]
+
+    def get_numeric_cols(self) -> List[str]:
+        return [col for col, schema in self.configs.items() if isinstance(schema, NumericStat)]
+
+    def fit(self, df: pd.DataFrame):
+        # support multi-processor running
+        cols = self.configs.keys()
+        jobs = (self._fit_one(col, df[col]) for col in cols)
+        stats = parallel_run(jobs, n_jobs = self.n_jobs)
+        self.configs = {col: stat for col, stat in zip(cols, stats)}
+
+    @delayer
+    def _fit_one(self, col: str, vector: pd.Series) -> _BaseStat:
+        stat = self.configs[col]
+        stat.fit(vector)
+        return stat
     
+    def generate(self, size: int = 100, seed: int = None, ignore_na:bool = False) -> pd.DataFrame:
+        return pd.concat(
+            [config.generate(
+                size = size,
+                seed = seed,
+                ignore_na = ignore_na
+            ) for col, config in self.configs.items()],
+            axis = 1
+        )
+
+
+def glm_clf(X: pd.DataFrame, y: np.ndarray, categ_cols: List[str] = None) -> LinearClfStatsModelWrapper:
+    if categ_cols is None:
+        categ_cols = []
+    categ_cols = X.columns.intersection(categ_cols, sort = False)
+    num_cols = X.columns.difference(categ_cols, sort = False)
+
+    used_cols = categ_cols.union(num_cols, sort = False)
+    X = X[used_cols]
+    
+    # preprocessing
+    ce = CountEncoder(
+        handle_unknown='value', 
+        handle_missing='value',
+        normalize = False,
+        combine_min_nan_groups=True,
+    )
+    categ_pipe = Pipeline([
+        ('impute', SimpleImputer(
+            strategy='constant', 
+            fill_value = 'Missing'
+        )),
+        ('encode', ce),
+        ('scale', StandardScaler())
+    ])
+    num_pipe = Pipeline([
+        ('impute', SimpleImputer(strategy='median')),
+        ('scale', RobustScaler())
+    
+    ])
+    prepipe = ColumnTransformer([
+            ('categ', categ_pipe, categ_cols),
+            ('num', num_pipe, num_cols),
+        ],
+        remainder='drop'
+    )
+    X_ = prepipe.fit_transform(X, y)
+    X_ = pd.DataFrame(X_, columns = used_cols)
+    
+    lm = LinearClfStatsModelWrapper(
+        model_family='glm',
+        fit_intercept=True,
+    )
+    lm.fit(X_, y)
+    
+    return lm
+    
+
+def mutual_info_score_clf(X: pd.DataFrame, y: np.ndarray, categ_cols: List[str] = None, n_neighbors:int = 3) -> pd.Series:
+    if categ_cols is None:
+        categ_cols = []
+    categ_cols = X.columns.intersection(categ_cols, sort = False)
+    num_cols = X.columns.difference(categ_cols, sort = False)
+
+    used_cols = categ_cols.union(num_cols, sort = False)
+    X = X[used_cols]
+
+    # preprocessing
+    oe = OrdinalEncoder(
+        handle_unknown='value', 
+        handle_missing='value'
+    )
+    categ_pipe = Pipeline([
+        ('impute', SimpleImputer(
+            strategy='constant', 
+            fill_value = 'Missing'
+        )),
+        ('ordinal', oe)
+    ])
+    num_pipe = SimpleImputer(strategy='median')
+    prepipe = ColumnTransformer([
+            ('categ', categ_pipe, categ_cols),
+            ('num', num_pipe, num_cols)
+        ],
+        remainder='drop'
+    )
+    X_ = prepipe.fit_transform(X, y)
+    mi = mutual_info_classif(
+        X_, 
+        y, 
+        discrete_features = X.columns.isin(categ_cols),
+        n_neighbors = n_neighbors
+    )
+    return pd.Series(
+        mi, 
+        index = used_cols
+    ).sort_values(ascending = False)
+    
+def chi2_score_cross(X: pd.DataFrame) -> pd.DataFrame:
+    categ_cols = X.columns
+    result = []
+    for c1 in categ_cols:
+        for c2 in categ_cols:
+            #if  c1 != c2:
+            chi2, pvalue, dof, matrix = chi2_contingency(
+                pd.crosstab(
+                    X[c1],
+                    X[c2]
+                )
+            )
+            result.append((c1, c2, chi2, pvalue))
+    chi_test_output = pd.DataFrame(
+        result, 
+        columns = ['var1', 'var2', 'chi2', 'pvalue']
+    )
+    return chi_test_output
+
+class TabularUniVarClfTargetCorr(_BaseTabularSerializable):
+    def __init__(self, configs: Dict[str, _BaseUniVarClfTargetCorr], n_jobs:int = 1):
+        self.configs = configs
+        self.n_jobs = n_jobs
+        
+    def get_categ_cols(self) -> List[str]:
+        return [col for col, schema in self.configs.items() if isinstance(schema, CategUniVarClfTargetCorr)]
+
+    def get_numeric_cols(self) -> List[str]:
+        return [col for col, schema in self.configs.items() if isinstance(schema, NumericUniVarClfTargetCorr)]
+
+    def fit(self, X: pd.DataFrame, y: pd.Series):
+        # support multi-processor running
+        cols = self.configs.keys()
+        jobs = (self._fit_one(col, X[col], y) for col in cols)
+        stats = parallel_run(jobs, n_jobs = self.n_jobs)
+        self.configs = {col: stat for col, stat in zip(cols, stats)}
+
+    @delayer
+    def _fit_one(self, col: str, x: pd.Series, y: pd.Series) -> _BaseStat:
+        stat = self.configs[col]
+        stat.fit(x, y)
+        return stat
