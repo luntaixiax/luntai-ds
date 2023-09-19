@@ -4,7 +4,7 @@ from typing import Union, Dict, List, Literal
 from collections import namedtuple
 from scipy.special import exp10
 from numpy import expm1, log1p, log10
-from scipy.stats import rv_histogram, chi2_contingency
+from scipy.stats import rv_histogram, chi2_contingency, variation
 from optbinning import MulticlassOptimalBinning
 from sklearn.base import BaseEstimator
 from sklearn.preprocessing import StandardScaler, RobustScaler
@@ -41,6 +41,19 @@ XtremeStat = namedtuple(
     field_names=['lbound', 'rbound', 'lxtreme_mean', 'lxtreme_median', 'rxtreme_mean', 'rxtreme_median']
 )
 
+
+def serialize(v):
+    if pd.isnull(v):
+        return None
+    if v == np.inf:
+        return float('inf')
+    if v == -np.inf:
+        return -float('inf')
+    if hasattr(v, 'item'):
+        return v.item()
+    else:
+        return v 
+
 class _BaseStat:
     def fit(self, vector: pd.Series):
         raise NotImplemented("")
@@ -67,18 +80,24 @@ class CategStat(_BaseStat):
         self.total_ = len(vector)
         # missing rate
         missing = vector.isna()
-        self.missing_ = StatVar(value=missing.sum().item(), perc=missing.mean())
+        self.missing_ = StatVar(
+            value=serialize(missing.sum()), 
+            perc=serialize(missing.mean())
+        )
         # num of unique value (dropped NA value)
         unique = len(vector.dropna().unique())
         if self.binary_:
             assert unique <= 2, f"Labeled as binary value, but {unique} categories are found"
-        self.unique_ = StatVar(value=unique, perc=unique / self.total_)
+        self.unique_ = StatVar(
+            value=serialize(unique), 
+            perc=serialize(unique / self.total_)
+        )
         # category counts without null
         self.vcounts_ = vector.value_counts(
             dropna = True,
             normalize = False
-        )
-        self.vpercs_ = self.vcounts_ / self.vcounts_.sum()
+        ).fillna(0)
+        self.vpercs_ = (self.vcounts_ / self.vcounts_.sum()).fillna(0)
 
         self.fitted_ = True
 
@@ -152,33 +171,38 @@ class CategStat(_BaseStat):
         else:
             raise Exception("Not fitted error")
 
+
+
+
 def getNumericalStat(vector) -> Union[QuantileStat, DescStat]:
+    vector = vector.astype('float')
     stat_quantile = QuantileStat(
-        minimum = vector.min(),
-        perc_1th = vector.quantile(0.01).item(),
-        perc_5th = vector.quantile(0.05).item(),
-        q1 = vector.quantile(0.25).item(),
-        median = vector.quantile(0.5).item(),
-        q3 = vector.quantile(0.75).item(),
-        perc_95th = vector.quantile(0.95).item(),
-        perc_99th = vector.quantile(0.99).item(),
-        maximum = vector.max(),
-        iqr = vector.quantile(0.75).item() - vector.quantile(0.25).item(),
-        range = vector.max() - vector.min()
+        minimum = serialize(vector.min()),
+        perc_1th = serialize(vector.quantile(0.01)),
+        perc_5th = serialize(vector.quantile(0.05)),
+        q1 = serialize(vector.quantile(0.25)),
+        median = serialize(vector.quantile(0.5)),
+        q3 = serialize(vector.quantile(0.75)),
+        perc_95th = serialize(vector.quantile(0.95)),
+        perc_99th = serialize(vector.quantile(0.99)),
+        maximum = serialize(vector.max()),
+        iqr = serialize(vector.quantile(0.75) - vector.quantile(0.25)),
+        range = serialize(vector.max() - vector.min())
     )
     # descriptive statistics
     stat_descriptive = DescStat(
-        mean = vector.mean(),
-        var = vector.var(),
-        std = vector.std(),
-        skew = vector.skew(),
-        kurt = vector.kurtosis(),
-        mad = vector.mad(),
-        cv = vector.std() / vector.mean()
+        mean = serialize(vector.mean()),
+        var = serialize(vector.var()),
+        std = serialize(vector.std()),
+        skew = serialize(vector.skew()),
+        kurt = serialize(vector.kurtosis()),
+        mad = serialize(vector.mad()),
+        cv = serialize(variation(vector, nan_policy='omit'))
     )
     return stat_quantile, stat_descriptive
 
 def getXtremeStat(vector, xtreme_method: Literal['iqr', 'quantile'] = 'iqr') -> XtremeStat:
+    vector = vector.astype('float')
     if xtreme_method == 'iqr':
         q1 = vector.quantile(0.25)
         q3 = vector.quantile(0.75)
@@ -194,12 +218,12 @@ def getXtremeStat(vector, xtreme_method: Literal['iqr', 'quantile'] = 'iqr') -> 
     rvector = vector[vector > rbound]
 
     return XtremeStat(
-        lbound = lbound,
-        rbound = rbound,
-        lxtreme_mean = lvector.mean(),
-        lxtreme_median = lvector.median(),
-        rxtreme_mean = rvector.mean(),
-        rxtreme_median = rvector.median(),
+        lbound = serialize(lbound),
+        rbound = serialize(rbound),
+        lxtreme_mean = serialize(lvector.mean()),
+        lxtreme_median = serialize(lvector.median()),
+        rxtreme_mean = serialize(rvector.mean()),
+        rxtreme_median = serialize(rvector.median()),
     )
 
 def log10pc(x):
@@ -222,15 +246,27 @@ class NumericStat(_BaseStat):
         self.total_ = len(vector)
         # missing rate
         missing = vector.isna()
-        self.missing_ = StatVar(value=missing.sum().item(), perc=missing.mean())
+        self.missing_ = StatVar(
+            value=serialize(missing.sum()), 
+            perc=serialize(missing.mean())
+        )
         # zero rate
-        zeros = vector[vector == 0].count().item()
-        self.zeros_ = StatVar(value=zeros, perc=zeros / self.total_)
+        zeros = vector[vector == 0].count()
+        self.zeros_ = StatVar(
+            value=serialize(zeros), 
+            perc=serialize(zeros / self.total_)
+        )
         # infinite value
-        infs_pos = vector[vector == np.inf].count().item()
-        self.infs_pos_ = StatVar(value=infs_pos, perc=infs_pos / self.total_)
-        infs_neg = vector[vector == -np.inf].count().item()
-        self.infs_neg_ = StatVar(value=infs_neg, perc=infs_neg / self.total_)
+        infs_pos = vector[vector == np.inf].count()
+        self.infs_pos_ = StatVar(
+            value=serialize(infs_pos), 
+            perc=serialize(infs_pos / self.total_)
+        )
+        infs_neg = vector[vector == -np.inf].count()
+        self.infs_neg_ = StatVar(
+            value=serialize(infs_neg), 
+            perc=serialize(infs_neg / self.total_)
+        )
 
         vector = vector.dropna()
         vector = vector[(vector < np.inf) & (vector > -np.inf)]
@@ -246,7 +282,10 @@ class NumericStat(_BaseStat):
             vector_clean = vector.copy()
 
         num_xtreme = len(vector) - len(vector_clean)
-        self.xtreme_ = StatVar(value=num_xtreme, perc=num_xtreme / self.total_)
+        self.xtreme_ = StatVar(
+            value=serialize(num_xtreme), 
+            perc=serialize(num_xtreme / self.total_)
+        )
 
         # percentile & descriptive statistics
         self.stat_quantile_, self.stat_descriptive_= getNumericalStat(vector_clean)
@@ -254,7 +293,7 @@ class NumericStat(_BaseStat):
         self.hist_, self.bin_edges_ = np.histogram(vector_clean, bins = self.bins_)
 
         if self.log_scale_:
-            vector_log = pd.Series(log10pc(vector), name = self.colname_)
+            vector_log = pd.Series(log10pc(vector), name = self.colname_, dtype = 'float')
 
             # xtreme value
             if self.xtreme_method_:
@@ -264,7 +303,10 @@ class NumericStat(_BaseStat):
                 vector_clean_log = vector_log.copy()
 
             num_xtreme_log = len(vector_log) - len(vector_clean_log)
-            self.xtreme_log_ = StatVar(value=num_xtreme_log, perc=num_xtreme_log / self.total_)
+            self.xtreme_log_ = StatVar(
+                value=serialize(num_xtreme_log), 
+                perc=serialize(num_xtreme_log / self.total_)
+            )
             # percentile & descriptive statistics
             self.stat_quantile_log_, self.stat_descriptive_log_= getNumericalStat(vector_clean_log)
             # histogram
@@ -411,7 +453,7 @@ class NumericStat(_BaseStat):
 ######### Univaraite Feature-Target correlation
 
 def _combine_x_y(x: pd.Series, y: pd.Series, dropna: bool = True, combine_x_categ:bool = False) -> pd.DataFrame:
-    df = pd.DataFrame({'x' : x.values, 'y' : y.astype('str').values})
+    df = pd.DataFrame({'x' : x.values, 'y' : y.values})
     if dropna:
         df = df.dropna(axis = 0, how = 'any')
     # categorical variable for x only:
@@ -446,8 +488,8 @@ class CategUniVarClfTargetCorr(_BaseUniVarClfTargetCorr):
         self.get_meta(x, y)
         
         df = _combine_x_y(
-            x, 
-            y, 
+            x.astype('str'), 
+            y.astype('str'), 
             dropna = True, 
             combine_x_categ = True # combine x's categories to be less than 20
         )
@@ -524,8 +566,8 @@ class NumericUniVarClfTargetCorr(_BaseUniVarClfTargetCorr):
         self.get_meta(x, y)
         
         df = _combine_x_y(
-            x, 
-            y, 
+            x.astype('float'), 
+            y.astype('str'), 
             dropna = False,
         )
         
