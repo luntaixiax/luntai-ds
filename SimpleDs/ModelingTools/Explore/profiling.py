@@ -4,17 +4,9 @@ from typing import Union, Dict, List, Literal
 from collections import namedtuple
 from scipy.special import exp10
 from numpy import expm1, log1p, log10
-from scipy.stats import rv_histogram, chi2_contingency, variation
+from scipy.stats import rv_histogram, chi2_contingency, variation, kstest
 from optbinning import MulticlassOptimalBinning
-from sklearn.base import BaseEstimator
-from sklearn.preprocessing import StandardScaler, RobustScaler
-from sklearn.feature_selection import mutual_info_classif
-from sklearn.impute import SimpleImputer
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from category_encoders.ordinal import OrdinalEncoder
-from category_encoders.count import CountEncoder
-from ModelingTools.CustomModel.linear import LinearClfStatsModelWrapper
+
 from ModelingTools.utils.parallel import parallel_run, delayer
 from CommonTools.accessor import toJSON, loadJSON
 
@@ -33,7 +25,7 @@ QuantileStat = namedtuple(
 # named typle for descriptive stats
 DescStat = namedtuple(
     'DescStat',
-    field_names=['mean', 'var', 'std', 'skew', 'kurt', 'mad', 'cv']
+    field_names=['mean', 'var', 'std', 'skew', 'kurt', 'mad', 'cv', 'normality_p']
 )
 # named tuple for extreme value analysis
 XtremeStat = namedtuple(
@@ -55,24 +47,54 @@ def serialize(v):
         return v 
 
 class _BaseStat:
+    def __init__(self):
+        self.classname = self.__class__.__name__
+    
     def fit(self, vector: pd.Series):
+        raise NotImplemented("")
+    
+    def collect_attrs(self) -> dict:
+        # gather serializable parameters for __init__
+        raise NotImplemented("")
+
+    def collect_params(self) -> dict:
+        # gather serializable estimated parameters
+        raise NotImplemented("")
+
+    @classmethod
+    def set_params(cls, obj, param_dict: dict):
+        # set params estimated to the new cls object
         raise NotImplemented("")
 
     def to_dict(self) -> dict:
-        raise NotImplemented("")
-    
+        if self.fitted_:
+            return dict(
+                colname = self.colname_,
+                attr = self.collect_attrs(),
+                params = self.collect_params()
+            )
+        else:
+            raise Exception("Not fitted error")
+
     @classmethod
     def from_dict(cls, d: dict):
-        raise NotImplemented("")
+        c = cls(
+            **d['attr']
+        )
+        c.colname_ = d['colname']
+        cls.set_params(c, d['params'])
+        c.fitted_ = True
+        return c
 
     def generate(self, size: int = 100, seed: int = None, ignore_na:bool = False) -> pd.Series:
         raise NotImplemented("")
 
 class CategStat(_BaseStat):
-    def __init__(self, int_dtype: bool = False, binary: bool = False):
+    def __init__(self, int_dtype: bool = False, max_categories: int = 25):
+        super().__init__()
         self.fitted_ = False
         self.int_dtype_ = int_dtype
-        self.binary_ = binary
+        self.max_categories_ = max_categories
 
     def fit(self, vector: pd.Series):
         self.colname_ = vector.name
@@ -86,8 +108,6 @@ class CategStat(_BaseStat):
         )
         # num of unique value (dropped NA value)
         unique = len(vector.dropna().unique())
-        if self.binary_:
-            assert unique <= 2, f"Labeled as binary value, but {unique} categories are found"
         self.unique_ = StatVar(
             value=serialize(unique), 
             perc=serialize(unique / self.total_)
@@ -101,49 +121,44 @@ class CategStat(_BaseStat):
 
         self.fitted_ = True
 
-    def to_dict(self) -> dict:
-        if self.fitted_:
-            return dict(
-                colname = self.colname_,
-                attr = dict(
-                    int_dtype = self.int_dtype_,
-                    binary = self.binary_
-                ),
-                stats = dict(
-                    total = self.total_,
-                    missing = self.missing_._asdict(),
-                    unique = self.unique_._asdict()
-                ),
-                distribution = dict(
-                    vcounts = self.vcounts_.to_dict(),
-                    vpercs = self.vpercs_.to_dict(),
-                )
+    def collect_attrs(self) -> dict:
+        # gather serializable parameters for __init__
+        return dict(
+            int_dtype = self.int_dtype_,
+            max_categories = self.max_categories_
+        )
+
+    def collect_params(self) -> dict:
+        # gather serializable estimated parameters
+        return dict(
+            stats = dict(
+                total = self.total_,
+                missing = self.missing_._asdict(),
+                unique = self.unique_._asdict()
+            ),
+            distribution = dict(
+                vcounts = self.vcounts_.to_dict(),
+                vpercs = self.vpercs_.to_dict(),
             )
-        else:
-            raise Exception("Not fitted error")
-        
+        )
+
     @classmethod
-    def from_dict(cls, d: dict):
-        c = cls(
-            int_dtype = d['attr']['int_dtype'],
-            binary = d['attr']['binary']
-        )
-        c.colname_ = d['colname']
+    def set_params(cls, obj, param_dict: dict):
+        # set params estimated to the new cls object
         # stats
-        c.total_ = d['stats']['total']
-        c.missing_ = StatVar(**d['stats']['missing'])
-        c.unique_ = StatVar(**d['stats']['unique'])
+        obj.total_ = param_dict['stats']['total']
+        obj.missing_ = StatVar(**param_dict['stats']['missing'])
+        obj.unique_ = StatVar(**param_dict['stats']['unique'])
         # distribution
-        c.vcounts_ = pd.Series(
-            d['distribution']['vcounts'], 
-            name = d['colname']
+        obj.vcounts_ = pd.Series(
+            param_dict['distribution']['vcounts'], 
+            name = obj.colname_
         )
-        c.vpercs_ = pd.Series(
-            d['distribution']['vpercs'], 
-            name = d['colname']
+        obj.vpercs_ = pd.Series(
+            param_dict['distribution']['vpercs'], 
+            name = obj.colname_
         )
-        c.fitted_ = True
-        return c
+
 
     def generate(self, size: int = 100, seed: int = None, ignore_na:bool = False) -> pd.Series:
         if self.fitted_:
@@ -165,14 +180,133 @@ class CategStat(_BaseStat):
                 name = self.colname_,
             )
             if self.int_dtype_:
-                s = s.astype('Int64')
+                s = s.astype('float').astype('Int64')
             return s
             
         else:
             raise Exception("Not fitted error")
 
 
+class BinaryStat(CategStat):
+    def __init__(self, pos_values: list, na_to_pos: bool = False, int_dtype: bool = False):
+        super().__init__(int_dtype = int_dtype)
+        self.pos_values_ = pos_values
+        self.na_to_pos_ = na_to_pos
 
+    def fit(self, vector: pd.Series):
+        self.colname_ = vector.name
+        # total number of records
+        self.total_ = len(vector)
+        # missing rate
+        missing = vector.isna()
+        self.missing_ = StatVar(
+            value=serialize(missing.sum()), 
+            perc=serialize(missing.mean())
+        )
+        # num of unique value (dropped NA value)
+        unique = len(vector.dropna().unique())
+        assert unique <= 2, f"Labeled as binary value, but {unique} categories are found"
+        self.unique_ = StatVar(
+            value=serialize(unique), 
+            perc=serialize(unique / self.total_)
+        )
+        # category counts without null
+        self.vcounts_ = vector.value_counts(
+            dropna = True,
+            normalize = False
+        ).fillna(0)
+        self.vpercs_ = (self.vcounts_ / self.vcounts_.sum()).fillna(0)
+
+        # binary stat
+        vector_binary = vector.copy()
+        vector_binary[~vector_binary.isna()] = vector_binary[~vector_binary.isna()].apply(
+            lambda v: 1 if v in self.pos_values_ else 0
+        )
+        vector_binary = vector_binary.fillna(int(self.na_to_pos_))
+        self.binary_vcounts_ = vector_binary.value_counts(
+            dropna = True,
+            normalize = False
+        ).fillna(0)
+        self.binary_vpercs_ = (self.binary_vcounts_ / self.binary_vcounts_.sum()).fillna(0)
+
+        self.fitted_ = True
+
+    def collect_attrs(self) -> dict:
+        # gather serializable parameters for __init__
+        return dict(
+            pos_values = self.pos_values_,
+            int_dtype = self.int_dtype_,
+            na_to_pos = self.na_to_pos_
+        )
+
+    def collect_params(self) -> dict:
+        # gather serializable estimated parameters
+        return dict(
+            stats = dict(
+                total = self.total_,
+                missing = self.missing_._asdict(),
+                unique = self.unique_._asdict()
+            ),
+            distribution = dict(
+                vcounts = self.vcounts_.to_dict(),
+                vpercs = self.vpercs_.to_dict(),
+            ),
+            binary_distribution = dict(
+                binary_vcounts = self.binary_vcounts_.to_dict(),
+                binary_vpercs = self.binary_vpercs_.to_dict(),
+            )
+        )
+
+    @classmethod
+    def set_params(cls, obj, param_dict: dict):
+        # set params estimated to the new cls object
+        # stats
+        obj.total_ = param_dict['stats']['total']
+        obj.missing_ = StatVar(**param_dict['stats']['missing'])
+        obj.unique_ = StatVar(**param_dict['stats']['unique'])
+        # distribution
+        obj.vcounts_ = pd.Series(
+            param_dict['distribution']['vcounts'], 
+            name = obj.colname_
+        )
+        obj.vpercs_ = pd.Series(
+            param_dict['distribution']['vpercs'], 
+            name = obj.colname_
+        )
+        obj.binary_vcounts_ = pd.Series(
+            param_dict['binary_distribution']['binary_vcounts'], 
+            name = obj.colname_
+        )
+        obj.binary_vpercs_ = pd.Series(
+            param_dict['binary_distribution']['binary_vpercs'], 
+            name = obj.colname_
+        )
+
+class OrdinalCategStat(CategStat):
+    def __init__(self, categories: List[Union[str, int]], int_dtype: bool = False):
+        super().__init__(int_dtype = int_dtype)
+        self.categories_ = categories
+
+    def collect_attrs(self) -> dict:
+        # gather serializable parameters for __init__
+        return dict(
+            int_dtype = self.int_dtype_,
+            categories = self.categories_
+        )
+    
+class NominalCategStat(CategStat):
+    def to_ordinal(self, categories: List[Union[str, int]] = None) -> OrdinalCategStat:
+        oc = OrdinalCategStat(
+            categories = self.vcounts_.index.tolist() if categories is None else categories,
+            int_dtype = self.int_dtype_
+        )
+        oc.colname_ = self.colname_
+        self.set_params(
+            self,
+            param_dict = self.collect_params()
+        )
+        oc.fitted_ = self.fitted_
+        return oc
 
 def getNumericalStat(vector) -> Union[QuantileStat, DescStat]:
     vector = vector.astype('float')
@@ -197,7 +331,8 @@ def getNumericalStat(vector) -> Union[QuantileStat, DescStat]:
         skew = serialize(vector.skew()),
         kurt = serialize(vector.kurtosis()),
         mad = serialize(vector.mad()),
-        cv = serialize(variation(vector, nan_policy='omit'))
+        cv = serialize(variation(vector, nan_policy='omit')),
+        normality_p = serialize(kstest(vector.dropna(), cdf = 'norm')[1])
     )
     return stat_quantile, stat_descriptive
 
@@ -234,6 +369,7 @@ def exp10pc(x):
 
 class NumericStat(_BaseStat):
     def __init__(self, setaside_zero: bool = False, log_scale: bool = False, xtreme_method: Literal['iqr', 'quantile'] = None, bins: int = 100):
+        super().__init__()
         self.setaside_zero_ = setaside_zero
         self.log_scale_ = log_scale
         self.bins_ = bins
@@ -314,88 +450,78 @@ class NumericStat(_BaseStat):
 
         self.fitted_ = True
 
-    def to_dict(self) -> dict:
-        if self.fitted_:
-            return dict(
-                colname = self.colname_,
-                attr = dict(
-                    setaside_zero = self.setaside_zero_,
-                    log_scale = self.log_scale_,
-                    bins = self.bins_,
-                    xtreme_method = self.xtreme_method_
+    def collect_attrs(self) -> dict:
+        # gather serializable parameters for __init__
+        return dict(
+            setaside_zero = self.setaside_zero_,
+            log_scale = self.log_scale_,
+            bins = self.bins_,
+            xtreme_method = self.xtreme_method_
+        )
+
+    def collect_params(self) -> dict:
+        # gather serializable estimated parameters
+        return dict(
+            stats = dict(
+                total = self.total_,
+                missing = self.missing_._asdict(),
+                zeros = self.zeros_._asdict(),
+                infs_pos = self.infs_pos_._asdict(),
+                infs_neg = self.infs_neg_._asdict(),
+            ),
+            xtreme_num = dict(
+                origin = self.xtreme_._asdict() if hasattr(self, 'xtreme_') else None,
+                log = self.xtreme_log_._asdict() if hasattr(self, 'xtreme_log_') else None
+            ), # number of extreme values
+            xtreme_stat = dict(
+                origin = self.xtreme_stat_._asdict() if hasattr(self, 'xtreme_stat_') else None,
+                log = self.xtreme_stat_log_._asdict() if hasattr(self, 'xtreme_stat_log_') else None
+            ), # extreme value statistics
+            stat_quantile = dict(
+                origin = self.stat_quantile_._asdict(),
+                log = self.stat_quantile_log_._asdict() if hasattr(self, 'stat_quantile_log_') else None
+            ),
+            stat_descriptive = dict(
+                origin = self.stat_descriptive_._asdict(),
+                log = self.stat_descriptive_log_._asdict() if hasattr(self, 'stat_descriptive_log_') else None
+            ),
+            histogram = dict(
+                origin = dict(
+                    hist = self.hist_.tolist(),
+                    bin_edges = self.bin_edges_.tolist()
                 ),
-                stats = dict(
-                    total = self.total_,
-                    missing = self.missing_._asdict(),
-                    zeros = self.zeros_._asdict(),
-                    infs_pos = self.infs_pos_._asdict(),
-                    infs_neg = self.infs_neg_._asdict(),
-                ),
-                xtreme_num = dict(
-                    origin = self.xtreme_._asdict() if hasattr(self, 'xtreme_') else None,
-                    log = self.xtreme_log_._asdict() if hasattr(self, 'xtreme_log_') else None
-                ), # number of extreme values
-                xtreme_stat = dict(
-                    origin = self.xtreme_stat_._asdict() if hasattr(self, 'xtreme_stat_') else None,
-                    log = self.xtreme_stat_log_._asdict() if hasattr(self, 'xtreme_stat_log_') else None
-                ), # extreme value statistics
-                stat_quantile = dict(
-                    origin = self.stat_quantile_._asdict(),
-                    log = self.stat_quantile_log_._asdict() if hasattr(self, 'stat_quantile_log_') else None
-                ),
-                stat_descriptive = dict(
-                    origin = self.stat_descriptive_._asdict(),
-                    log = self.stat_descriptive_log_._asdict() if hasattr(self, 'stat_descriptive_log_') else None
-                ),
-                histogram = dict(
-                    origin = dict(
-                        hist = self.hist_.tolist(),
-                        bin_edges = self.bin_edges_.tolist()
-                    ),
-                    log = dict(
-                        hist = self.hist_log_.tolist() if hasattr(self, 'hist_log_') else None,
-                        bin_edges = self.bin_edges_log_.tolist() if hasattr(self, 'bin_edges_log_') else None
-                    )
+                log = dict(
+                    hist = self.hist_log_.tolist() if hasattr(self, 'hist_log_') else None,
+                    bin_edges = self.bin_edges_log_.tolist() if hasattr(self, 'bin_edges_log_') else None
                 )
             )
-        else:
-            raise Exception("Not fitted error")
+        )
 
     @classmethod
-    def from_dict(cls, d: dict):
-        c = cls(
-            setaside_zero = d['attr']['setaside_zero'],
-            log_scale = d['attr']['log_scale'],
-            bins = d['attr']['bins'],
-            xtreme_method = d['attr']['xtreme_method']
-        )
-        c.colname_ = d['colname']
-        # stats
-        c.total_ = d['stats']['total']
-        c.missing_ = StatVar(**d['stats']['missing'])
-        c.zeros_ = StatVar(**d['stats']['zeros'])
-        c.infs_pos_ = StatVar(**d['stats']['infs_pos'])
-        c.infs_neg_ = StatVar(**d['stats']['infs_neg'])
-        c.xtreme_ = StatVar(**d['xtreme_num']['origin'])
+    def set_params(cls, obj, param_dict: dict):
+        # set params estimated to the new cls object
+        obj.total_ = param_dict['stats']['total']
+        obj.missing_ = StatVar(**param_dict['stats']['missing'])
+        obj.zeros_ = StatVar(**param_dict['stats']['zeros'])
+        obj.infs_pos_ = StatVar(**param_dict['stats']['infs_pos'])
+        obj.infs_neg_ = StatVar(**param_dict['stats']['infs_neg'])
+        obj.xtreme_ = StatVar(**param_dict['xtreme_num']['origin'])
         # origin statistics
-        if c.xtreme_method_ is not None:
-            c.xtreme_stat_ = XtremeStat(**d['xtreme_stat']['origin'])
-        c.stat_quantile_ = QuantileStat(**d['stat_quantile']['origin'])
-        c.stat_descriptive_ = DescStat(**d['stat_descriptive']['origin'])
-        c.hist_ = np.array(d['histogram']['origin']['hist'])
-        c.bin_edges_ = np.array(d['histogram']['origin']['bin_edges'])
+        if obj.xtreme_method_ is not None:
+            obj.xtreme_stat_ = XtremeStat(**param_dict['xtreme_stat']['origin'])
+        obj.stat_quantile_ = QuantileStat(**param_dict['stat_quantile']['origin'])
+        obj.stat_descriptive_ = DescStat(**param_dict['stat_descriptive']['origin'])
+        obj.hist_ = np.array(param_dict['histogram']['origin']['hist'])
+        obj.bin_edges_ = np.array(param_dict['histogram']['origin']['bin_edges'])
         # log statistics
-        if c.log_scale_:
-            c.xtreme_log_ = StatVar(**d['xtreme_num']['log'])
-            if c.xtreme_method_ is not None:
-                c.xtreme_stat_log_ = XtremeStat(**d['xtreme_stat']['log'])
-            c.stat_quantile_log_ = QuantileStat(**d['stat_quantile']['log'])
-            c.stat_descriptive_log_ = DescStat(**d['stat_descriptive']['log'])
-            c.hist_log_ = np.array(d['histogram']['log']['hist'])
-            c.bin_edges_log_ = np.array(d['histogram']['log']['bin_edges'])
-        
-        c.fitted_ = True
-        return c
+        if obj.log_scale_:
+            obj.xtreme_log_ = StatVar(**param_dict['xtreme_num']['log'])
+            if obj.xtreme_method_ is not None:
+                obj.xtreme_stat_log_ = XtremeStat(**param_dict['xtreme_stat']['log'])
+            obj.stat_quantile_log_ = QuantileStat(**param_dict['stat_quantile']['log'])
+            obj.stat_descriptive_log_ = DescStat(**param_dict['stat_descriptive']['log'])
+            obj.hist_log_ = np.array(param_dict['histogram']['log']['hist'])
+            obj.bin_edges_log_ = np.array(param_dict['histogram']['log']['bin_edges'])
 
     def generate(self, size: int = 100, seed: int = None, ignore_na:bool = False) -> pd.Series:
         if self.fitted_:
@@ -446,7 +572,6 @@ class NumericStat(_BaseStat):
             ).astype(dtype='Float64')
         else:
             raise Exception("Not fitted error")
-
 
 
     
@@ -692,14 +817,23 @@ class TabularStat(_BaseTabularSerializable):
         self.n_jobs = n_jobs
         
     def get_categ_cols(self) -> List[str]:
-        return [col for col, schema in self.configs.items() if isinstance(schema, CategStat)]
+        return [col for col, schema in self.configs.items() if isinstance(schema, CategStat) or schema.classname in ('BinaryStat','NominalCategStat','OrdinalCategStat')]
+    
+    def get_nominal_cols(self) -> List[str]:
+        return [col for col, schema in self.configs.items() if isinstance(schema, NominalCategStat) or schema.classname == 'NominalCategStat']
+    
+    def get_binary_cols(self) -> List[str]:
+        return [col for col, schema in self.configs.items() if isinstance(schema, BinaryStat) or schema.classname == 'BinaryStat']
+    
+    def get_ordinal_cols(self) -> List[str]:
+        return [col for col, schema in self.configs.items() if isinstance(schema, OrdinalCategStat) or schema.classname == 'OrdinalCategStat']
 
     def get_numeric_cols(self) -> List[str]:
-        return [col for col, schema in self.configs.items() if isinstance(schema, NumericStat)]
+        return [col for col, schema in self.configs.items() if isinstance(schema, NumericStat) or schema.classname == 'NumericStat']
 
     def fit(self, df: pd.DataFrame):
         # support multi-processor running
-        cols = self.configs.keys()
+        cols = df.columns.intersection(self.configs.keys(), sort=False)
         jobs = (self._fit_one(col, df[col]) for col in cols)
         stats = parallel_run(jobs, n_jobs = self.n_jobs)
         self.configs = {col: stat for col, stat in zip(cols, stats)}
@@ -721,112 +855,6 @@ class TabularStat(_BaseTabularSerializable):
         )
 
 
-def glm_clf(X: pd.DataFrame, y: np.ndarray, categ_cols: List[str] = None) -> LinearClfStatsModelWrapper:
-    if categ_cols is None:
-        categ_cols = []
-    categ_cols = X.columns.intersection(categ_cols, sort = False)
-    num_cols = X.columns.difference(categ_cols, sort = False)
-
-    used_cols = categ_cols.union(num_cols, sort = False)
-    X = X[used_cols]
-    
-    # preprocessing
-    ce = CountEncoder(
-        handle_unknown='value', 
-        handle_missing='value',
-        normalize = False,
-        combine_min_nan_groups=True,
-    )
-    categ_pipe = Pipeline([
-        ('impute', SimpleImputer(
-            strategy='constant', 
-            fill_value = 'Missing'
-        )),
-        ('encode', ce),
-        ('scale', StandardScaler())
-    ])
-    num_pipe = Pipeline([
-        ('impute', SimpleImputer(strategy='median')),
-        ('scale', RobustScaler())
-    
-    ])
-    prepipe = ColumnTransformer([
-            ('categ', categ_pipe, categ_cols),
-            ('num', num_pipe, num_cols),
-        ],
-        remainder='drop'
-    )
-    X_ = prepipe.fit_transform(X, y)
-    X_ = pd.DataFrame(X_, columns = used_cols)
-    
-    lm = LinearClfStatsModelWrapper(
-        model_family='glm',
-        fit_intercept=True,
-    )
-    lm.fit(X_, y)
-    
-    return lm
-    
-
-def mutual_info_score_clf(X: pd.DataFrame, y: np.ndarray, categ_cols: List[str] = None, n_neighbors:int = 3) -> pd.Series:
-    if categ_cols is None:
-        categ_cols = []
-    categ_cols = X.columns.intersection(categ_cols, sort = False)
-    num_cols = X.columns.difference(categ_cols, sort = False)
-
-    used_cols = categ_cols.union(num_cols, sort = False)
-    X = X[used_cols]
-
-    # preprocessing
-    oe = OrdinalEncoder(
-        handle_unknown='value', 
-        handle_missing='value'
-    )
-    categ_pipe = Pipeline([
-        ('impute', SimpleImputer(
-            strategy='constant', 
-            fill_value = 'Missing'
-        )),
-        ('ordinal', oe)
-    ])
-    num_pipe = SimpleImputer(strategy='median')
-    prepipe = ColumnTransformer([
-            ('categ', categ_pipe, categ_cols),
-            ('num', num_pipe, num_cols)
-        ],
-        remainder='drop'
-    )
-    X_ = prepipe.fit_transform(X, y)
-    mi = mutual_info_classif(
-        X_, 
-        y, 
-        discrete_features = X.columns.isin(categ_cols),
-        n_neighbors = n_neighbors
-    )
-    return pd.Series(
-        mi, 
-        index = used_cols
-    ).sort_values(ascending = False)
-    
-def chi2_score_cross(X: pd.DataFrame) -> pd.DataFrame:
-    categ_cols = X.columns
-    result = []
-    for c1 in categ_cols:
-        for c2 in categ_cols:
-            #if  c1 != c2:
-            chi2, pvalue, dof, matrix = chi2_contingency(
-                pd.crosstab(
-                    X[c1],
-                    X[c2]
-                )
-            )
-            result.append((c1, c2, chi2, pvalue))
-    chi_test_output = pd.DataFrame(
-        result, 
-        columns = ['var1', 'var2', 'chi2', 'pvalue']
-    )
-    return chi_test_output
-
 class TabularUniVarClfTargetCorr(_BaseTabularSerializable):
     def __init__(self, configs: Dict[str, _BaseUniVarClfTargetCorr], n_jobs:int = 1):
         self.configs = configs
@@ -840,13 +868,13 @@ class TabularUniVarClfTargetCorr(_BaseTabularSerializable):
 
     def fit(self, X: pd.DataFrame, y: pd.Series):
         # support multi-processor running
-        cols = self.configs.keys()
+        cols = X.columns.intersection(self.configs.keys(), sort=False)
         jobs = (self._fit_one(col, X[col], y) for col in cols)
         stats = parallel_run(jobs, n_jobs = self.n_jobs)
         self.configs = {col: stat for col, stat in zip(cols, stats)}
 
     @delayer
-    def _fit_one(self, col: str, x: pd.Series, y: pd.Series) -> _BaseStat:
+    def _fit_one(self, col: str, x: pd.Series, y: pd.Series) -> _BaseUniVarClfTargetCorr:
         stat = self.configs[col]
         stat.fit(x, y)
         return stat

@@ -27,3 +27,4 @@ fastapi==0.100.1
 bokeh==2.4.3
 evidently==0.4.0
 toml==0.10.2
+streamlit==0.21.0

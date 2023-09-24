@@ -10,7 +10,8 @@ from bokeh.layouts import column, row, layout, gridplot
 from bokeh.palettes import Dark2_5, Dark2_8, Magma256
 from bokeh.transform import factor_cmap, transform
 from bokeh.io import save, output_file
-from ModelingTools.Explore.profiling import StatVar, QuantileStat, DescStat, NumericStat, CategStat, TabularStat, \
+from ModelingTools.Explore.profiling import StatVar, QuantileStat, DescStat, NumericStat, CategStat, \
+        BinaryStat, OrdinalCategStat, NominalCategStat, TabularStat, \
         CategUniVarClfTargetCorr, NumericUniVarClfTargetCorr, TabularUniVarClfTargetCorr
 
 def _sort_combine(arr: pd.Series, max_item:int = 10) -> pd.Series:
@@ -622,6 +623,40 @@ def plot_categ(nst: CategStat, html_path: str = None) -> row:
         
     return result
 
+def plot_binary(nst: BinaryStat, html_path: str = None) -> row:
+    summary = categ_count_summary(
+        nst.total_, 
+        nst.missing_, 
+        nst.unique_
+    )
+    donut = categ_donut(
+        total=nst.total_,
+        missing=nst.missing_,
+        size = (600, 500)
+    )
+    distr = chart_categ_distr(
+        vcounts = nst.binary_vcounts_,
+        size = (600, 640)
+    )
+
+    result = row([
+        column([
+            summary,
+            donut
+        ],
+        sizing_mode = 'stretch_width'
+        ),
+        distr
+    ],
+    sizing_mode = 'stretch_width'
+    )
+    
+    if html_path:
+        output_file(html_path)
+        save(result)
+        
+    return result
+
 def plot_numeric_clf_target_corr(nuct: NumericUniVarClfTargetCorr, html_path: str = None) -> row:
     
     tabs_x_y = Tabs(
@@ -727,16 +762,17 @@ def plot_categ_clf_target_corr(cuct: CategUniVarClfTargetCorr, html_path: str = 
     return result
 
 def table_summary(ts: TabularStat) -> row:
-    num_numeric = len(list(filter(lambda c: isinstance(c, NumericStat), ts.configs.values())))
-    broad_categs = list(filter(lambda c: isinstance(c, CategStat), ts.configs.values()))
-    num_binary = len(list(filter(lambda c: c.binary_ is True, broad_categs)))
-    num_categs = len(list(filter(lambda c: c.binary_ is False, broad_categs)))
+    num_numeric = len(list(filter(lambda c: isinstance(c, NumericStat) or c.__class__.__name__ == 'NumericStat', ts.configs.values())))
+    num_binary = len(list(filter(lambda c: isinstance(c, BinaryStat) or c.__class__.__name__ == 'BinaryStat', ts.configs.values())))
+    num_ordinal = len(list(filter(lambda c: isinstance(c, OrdinalCategStat) or c.__class__.__name__ == 'OrdinalCategStat', ts.configs.values())))
+    num_nominal = len(list(filter(lambda c: isinstance(c, NominalCategStat) or c.__class__.__name__ == 'NominalCategStat', ts.configs.values())))
     total = len(ts.configs)
     rows = row(
         [
             metric_div(num_numeric, num_numeric / total, 'Numerical Features', threshold_p = 1),
             metric_div(num_binary, num_binary / total, 'Binary Features', threshold_p = 1),
-            metric_div(num_categs, num_categs / total, 'Categorical Features', threshold_p = 1),
+            metric_div(num_ordinal, num_ordinal / total, 'Ordinal Categorical Features', threshold_p = 1),
+            metric_div(num_nominal, num_nominal / total, 'Nominal Categorical Features', threshold_p = 1),
         ],  
         sizing_mode='stretch_both'
     )
@@ -752,10 +788,13 @@ def plot_table_profiling(ts: TabularStat, html_path: str = None) -> column:
         table_summary(ts)
     ]
     for col, config in ts.configs.items():
-        if isinstance(config, NumericStat):
+        if isinstance(config, NumericStat) or config.__class__.__name__ == 'NumericStat':
             fig = plot_numeric(config)
-        elif isinstance(config, CategStat):
+        elif isinstance(config, (OrdinalCategStat, NominalCategStat)) \
+            or config.__class__.__name__ in ('OrdinalCategStat', 'NominalCategStat'):
             fig = plot_categ(config)
+        elif isinstance(config, BinaryStat) or config.__class__.__name__ == 'BinaryStat':
+            fig = plot_binary(config)
 
         figs.append(
             Div(
