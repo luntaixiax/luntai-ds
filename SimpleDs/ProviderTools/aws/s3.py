@@ -27,6 +27,7 @@ class S3Accessor:
                  use_ssl=None, verify=None, endpoint_url=None,
                  config=None
                  ):
+        self.region_name = region_name
         try:
             self.session = boto3.Session(
                 aws_access_key_id = aws_access_key_id,
@@ -53,19 +54,22 @@ class S3Accessor:
         else:
             logging.info("Boto3 session/client/resource created successfully.")
 
-    def list_buckets(self):
+    def list_buckets(self) -> pd.DataFrame:
         return pd.DataFrame.from_records(self.client.list_buckets()['Buckets'])
 
-    def create_bucket(self, bucket_name: str, region_name: str = 'ca-central-1') -> int:
+    def create_bucket(self, bucket_name: str) -> int:
         """Create a new bucket
 
         :param bucket_name: name of the bucket
-        :param region_name: region on S3
         :return:
         """
+        if self.region_name:
+            region_config = {'LocationConstraint': self.region_name}
+        else:
+            region_config = None
         self.client.create_bucket(
             Bucket = bucket_name,
-            CreateBucketConfiguration = {'LocationConstraint': region_name}
+            CreateBucketConfiguration = region_config
         )
         return 1
 

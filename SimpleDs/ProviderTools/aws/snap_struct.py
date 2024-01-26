@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 from datetime import date
 import logging
@@ -31,8 +32,8 @@ class SnapshotDataManagerS3(SnapshotDataManagerBase):
     def __init__(self, schema:str, table:str):
         """virtual database management interface
 
-        :param schema: the virtual schema , e.g., RAW, PROCESSED
-        :param table:  the virtual table under each schema, e.g., CLNT_GENERAL, BDA_GENERAL
+        :param schema: the virtual schema
+        :param table:  the virtual table under each schema
         """
         super().__init__(schema = schema, table = table)
         dir = os.path.join(self.ROOT_DIR, schema, table)
@@ -60,17 +61,10 @@ class SnapshotDataManagerS3(SnapshotDataManagerBase):
             **kws
         )
     
-    def _save_partitions(self, df: pyspark.sql.DataFrame, snap_dt: date, **kws):
-        """the pure logic to save pyspark dataframe to the system, without handling existing record problem
-
-        :param pyspark.sql.DataFrame df: _description_
-        :param date snap_dt: _description_
-        :raises NotImplementedError: _description_
-        """
-        raise NotImplementedError("")
-    
     def get_existing_snap_dts(self) -> List[date]:
         df = self.s3a.list_objs(remote_path = self.dir)
+        if df is None:
+            return []
         existing_snaps = list(set(map(
             str2dt,
             (
@@ -179,7 +173,7 @@ class SnapshotDataManagerS3(SnapshotDataManagerBase):
         """
         self.s3a.delete_folder(remote_folder_path = self.dir)
 
-    def duplicate(self, dst_schema: str, dst_table: str):
+    def duplicate(self, dst_schema: str, dst_table: str) -> SnapshotDataManagerS3:
         """duplicate the existing schema.table to new one, the existing one will be kept
 
         :param dst_schema: destination schema
@@ -194,8 +188,8 @@ class SnapshotDataManagerS3(SnapshotDataManagerBase):
                 from_path = from_filename,
                 to_path = to_filename
             )
+        return new
         
-
     def disk_space(self, snap_dt, unit='MB') -> float:
         """get the size of the snap date on disk
 

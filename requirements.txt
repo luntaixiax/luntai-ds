@@ -10,6 +10,9 @@ pyarrow==9.0.0
 pyspark==3.1.1
 ortools==9.4.1874 #9.5.2237
 boto3==1.26.76
+google-api-python-client==2.115.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.0
 openpyxl==3.1.2
 scikit-learn==1.0.2
 imbalanced-learn==0.10.1

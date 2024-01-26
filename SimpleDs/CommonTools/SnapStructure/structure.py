@@ -244,7 +244,7 @@ class SnapshotDataManagerBase:
         self.drop()
         return new
 
-    def duplicate(self, dst_schema: str, dst_table: str):
+    def duplicate(self, dst_schema: str, dst_table: str) -> SnapshotDataManagerBase:
         """duplicate the existing schema.table to new one, the existing one will be kept
 
         :param dst_schema: destination schema
@@ -284,8 +284,8 @@ class SnapshotDataManagerLocalFS(SnapshotDataManagerBase):
     def __init__(self, schema:str, table:str):
         """virtual database management interface
 
-        :param schema: the virtual schema , e.g., RAW, PROCESSED
-        :param table:  the virtual table under each schema, e.g., CLNT_GENERAL, BDA_GENERAL
+        :param schema: the virtual schema
+        :param table:  the virtual table under each schema
         """
         super().__init__(schema = schema, table = table)
         dir = os.path.join(self.ROOT_DIR, schema, table)
@@ -428,18 +428,7 @@ class SnapshotDataManagerLocalFS(SnapshotDataManagerBase):
         """
         shutil.rmtree(self.dir)
 
-    def migrate(self, dst_schema: str, dst_table: str):
-        """move from the existing schema.table to new one, the existing one will be deleted
-
-        :param dst_schema: destination schema
-        :param dst_table: destination table
-        :return:
-        """
-        new = self.duplicate(dst_schema, dst_table)
-        self.drop()
-        return new
-
-    def duplicate(self, dst_schema: str, dst_table: str):
+    def duplicate(self, dst_schema: str, dst_table: str) -> SnapshotDataManagerLocalFS:
         new = SnapshotDataManagerLocalFS(schema = dst_schema, table = dst_table)
         copy_tree(self.dir, new.dir)
         return new

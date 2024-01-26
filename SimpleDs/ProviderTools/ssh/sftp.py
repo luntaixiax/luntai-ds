@@ -2,13 +2,14 @@ import contextlib
 import fnmatch
 import os
 import glob
+from typing import List
 import paramiko
 import logging
 from stat import S_ISDIR, S_ISREG
 from tqdm.auto import tqdm
 
-class MyRemote:
-    def __init__(self, host, port, username, password, private_key_file=None):
+class SFTP:
+    def __init__(self, host: str, port: int, username: str, password: str, private_key_file: str=None):
         """Remote server operations using paramiko
 
         :param host: ip address of the remote server
@@ -40,23 +41,26 @@ class MyRemote:
         stdin_, stdout_, stderr_ = self.ssh.exec_command(bash_cmd)
         return stdin_, stdout_, stderr_
 
-    def getFilePath(self, file):
+    def getFilePath(self, file: str):
         return f"SFTP://{self.username}@{self.host}:{self.port}/{file}"
 
-    def ls(self, remoteFolderPath: str, pattern: str = None):
+    def ls(self, remoteFolderPath: str, pattern: str = None, verbose: bool = False) -> List[str]:
         """List files under a specific folder, and can specify filetype to filter
 
         :param remoteFolderPath: the remote folder path to list file
         :param pattern: the pattern regrex string for file filters, e.g., pattern = "*.csv" will only show all csv files
+        :param verbose: whether to show the list
         :return:
         """
         with self.getSFTP() as sftp:
             file_list = sftp.listdir(remoteFolderPath)
             if pattern:
                 file_list = list(filter(lambda x: fnmatch.fnmatch(x, pattern), file_list))
-        print(f"{len(file_list)} files found under {remoteFolderPath}:")
-        for i, file in enumerate(file_list):
-            print(i, file)
+        if verbose:
+            print(f"{len(file_list)} files found under {remoteFolderPath}:")
+            for i, file in enumerate(file_list):
+                print(i, file)
+        return file_list
 
     def mkdir(self, path: str, mode: int = 511, ignore_existing: bool = False) -> int:
         """create a remote directory
@@ -104,7 +108,7 @@ class MyRemote:
             yield fileObject
             fileObject.close()
 
-    def download(self, remoteFilePath, localFilePath):
+    def download(self, remoteFilePath: str, localFilePath: str):
         """download a file from remote server to local
 
         :param remoteFilePath:
@@ -151,7 +155,7 @@ class MyRemote:
                     if verbose:
                         logging.info(f"Successfully download File {item.filename}")
 
-    def upload(self, localFilePath, remoteFilePath):
+    def upload(self, localFilePath: str, remoteFilePath: str):
         """Upload a file from local to remote server
 
         :param localFilePath:
@@ -162,7 +166,7 @@ class MyRemote:
             sftp.put(localFilePath, remoteFilePath)
             logging.info(f"Successfully upload File from {localFilePath} to {self.getFilePath(remoteFilePath)}")
 
-    def upload_folder(self, localFolderPath, remoteFolderPath, pattern: str = None, verbose: bool = False):
+    def upload_folder(self, localFolderPath: str, remoteFolderPath: str, pattern: str = None, verbose: bool = False):
         """download a remote folder to local
 
         :param localFolderPath:
@@ -192,6 +196,16 @@ class MyRemote:
                     self.mkdir(remoteSubFolder, mode=511, ignore_existing=False)
                     self.upload_folder(localSubFolder, remoteSubFolder, pattern=pattern, verbose=verbose)
 
+    def copy(self, from_path: str, to_path: str):
+        cmd = f"cp {from_path} {to_path}"
+        self.bash(cmd)
+    
+    
+    def delete(self, remoteFolderPath: str):
+        with self.getSFTP() as sftp:
+            sftp.remove(remoteFolderPath)
+    
+    
     def delete_folder(self, remoteFolderPath: str):
         """Delete a folder recursively
 
@@ -209,7 +223,16 @@ class MyRemote:
 
             sftp.rmdir(remoteFolderPath)
             logging.info(f"Successfully delete folder: {remoteFolderPath}")
-
-
-if __name__ == '__main__':
-    logging.basicConfig(level = logging.INFO)
+            
+    def size(self, remoteFilePath: str) -> int:
+        with self.getSFTP() as sftp:
+            stat = sftp.lstat(remoteFilePath)
+            if S_ISDIR(stat.st_mode):
+                # if a folder
+                size = 0
+                for f in self.ls(remoteFilePath):
+                    fpath = os.path.join(remoteFilePath, f)
+                    size += self.size(fpath)
+            else:
+                size = stat.st_size
+        return size
