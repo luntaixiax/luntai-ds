@@ -1,4 +1,5 @@
 
+from __future__ import annotations
 from datetime import date
 import logging
 from typing import List
@@ -23,8 +24,8 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
     def __init__(self, schema:str, table:str, snap_dt_key: str):
         """database management interface
 
-        :param schema: schema , e.g., RAW, PROCESSED
-        :param table:  table under each schema, e.g., CLNT_GENERAL, BDA_GENERAL
+        :param schema: schema
+        :param table:  table under each schema
         :param snap_dt_key: snap date column name for all tables
         """
         super().__init__(schema = schema, table = table)
@@ -233,10 +234,16 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         """
         self.ch.drop_table(schema=self.schema, table=self.table)
 
-    def duplicate(self, dst_schema: str, dst_table: str):
+    def duplicate(self, dst_schema: str, dst_table: str) -> SnapshotDataManagerCHSQL:
         sql = """insert into {dst_schema:Identifier}.{dst_table:Identifier} select * from {src_schema:Identifier}.{src_table:Identifier}"""
         args = dict(dst_schema = dst_schema, dst_table = dst_table, src_schema = self.schema, src_table = self.table)
-        return self.ch.client.command(cmd = sql, parameters = args)
+        self.ch.client.command(cmd = sql, parameters = args)
+        new = SnapshotDataManagerCHSQL(
+            schema = dst_schema,
+            table = dst_table,
+            snap_dt_key = self.snap_dt_key
+        )
+        return new
 
     def disk_space(self, snap_dt, unit='MB') -> float:
         """get the size of the snap date file (pandas) or folder (pyspark partitions)
