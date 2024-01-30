@@ -5,21 +5,9 @@ from botocore.exceptions import ClientError
 import logging
 import pandas as pd
 import boto3
+from CommonTools.obj_storage import ObjStorage, remove_begin_slash, add_tail_slash
 
-def remove_begin_slash(url: str):
-    if url.startswith('/'):
-        prefix = str(url)[1:]
-    else:
-        prefix = str(url)
-    return prefix
-
-def add_tail_slash(url: str):
-    if url.endswith('/'):
-        return str(url)
-    else:
-        return str(url) + '/'
-
-class S3Accessor:
+class S3Accessor(ObjStorage):
     def __init__(self, aws_access_key_id=None, aws_secret_access_key=None,
                  aws_session_token=None, region_name=None,
                  botocore_session=None, profile_name=None,
@@ -53,6 +41,9 @@ class S3Accessor:
             logging.error(f"Boto3 failed to create client to access {service_name} \n{e}")
         else:
             logging.info("Boto3 session/client/resource created successfully.")
+            
+    def get_uri_protocol(self) -> str:
+        return "s3a"
 
     def list_buckets(self) -> pd.DataFrame:
         return pd.DataFrame.from_records(self.client.list_buckets()['Buckets'])
@@ -236,7 +227,7 @@ class S3Accessor:
             'Bucket': from_bucket_name,
             'Key': remove_begin_slash(from_path)
         }
-        self.client.copy(copy_source, to_bucket_name, to_path)
+        self.client.copy(copy_source, to_bucket_name, remove_begin_slash(to_path))
 
 
     def upload_file(self, local_path: str, remote_path: str, bucket_name: str = None, multipart_threshold: int = 1000000000000):
@@ -264,7 +255,7 @@ class S3Accessor:
             logging.info(f'File uploaded successfully from {local_path} to {key}:')
 
     def download_file(self, remote_path: str, local_path: str, bucket_name: str = None):
-        '''download file from MinIO to local machine
+        '''download file from S3 to local machine
 
         :param remote_path: remote path on S3 (excluding bucket); could either start with / or not
         :param local_path: local file path that you would like to save the file from MinIO, suggest to be absolute path
@@ -282,7 +273,7 @@ class S3Accessor:
             logging.info(f'File download successfully from {key} to {local_path}:')
 
 
-    def read_obj(self, remote_path: str, bucket_name: str = None):
+    def read_obj(self, remote_path: str, bucket_name: str = None) -> bytes:
         """read obj from S3 without downloading
 
         :param remote_path:  remote path to read on S3 (excluding bucket); could either start with / or not
@@ -295,13 +286,13 @@ class S3Accessor:
         obj = self.client.get_object(Bucket = bucket_name, Key= remove_begin_slash(remote_path))
         return obj['Body'].read()
 
-    def save_obj(self, body, remote_path: str, bucket_name: str = None) -> 1:
+    def save_obj(self, body: bytes, remote_path: str, bucket_name: str = None) -> 1:
         bucket_name = self.if_not_exist_return_default_bucket(bucket_name)
 
         self.resource.Object(bucket_name, remove_begin_slash(remote_path)).put(Body = body)
         return 1
 
-    def read_obj_to_iobuffer(self, remote_path: str, bucket_name: str = None):
+    def read_obj_to_iobuffer(self, remote_path: str, bucket_name: str = None) -> io.BytesIO:
         obj = self.read_obj(remote_path, bucket_name)
         buffer = io.BytesIO(obj)
         return buffer
@@ -376,6 +367,7 @@ class S3Accessor:
         """
         local_folder_path = os.path.abspath(local_folder_path)
         local_parent_dir_path = os.path.dirname(local_folder_path)
+        bucket_name = self.if_not_exist_return_default_bucket(bucket_name)
 
         for path, subdirs, files in os.walk(local_folder_path):
 
@@ -387,7 +379,11 @@ class S3Accessor:
                     remote_filepath = remote_filepath.replace("\\", "/")
                 remote_filepath = add_tail_slash(remove_begin_slash(remote_root_path)) +  remove_begin_slash(remote_filepath)
 
-                self.upload_file(local_path = local_filepath, remote_path = remote_filepath, bucket_name = bucket_name, multipart_threshold = multipart_threshold)
+                if multipart_threshold:
+                    config = boto3.s3.transfer.TransferConfig(multipart_threshold = multipart_threshold)
+                    self.client.upload_file(local_filepath, bucket_name, remote_filepath, Config = config)
+                else:
+                    self.client.upload_file(local_filepath, bucket_name, remote_filepath)
 
         logging.info(f"Successfully upload folder from {local_folder_path} to {remote_root_path}")
 
@@ -408,9 +404,9 @@ class S3Accessor:
             local_filepath = os.path.join(local_root_path, os.path.relpath(remote_filepath, remote_folder_path))
             if not os.path.exists(os.path.dirname(local_filepath)):
                 os.makedirs(os.path.dirname(local_filepath))
-            if remote_filepath[-1] == '/':  # bypass void path
+            if remote_filepath.endswith("/"):  # bypass void path
                 continue
 
-            self.download_file(remote_path = remote_filepath, local_path = local_filepath, bucket_name = bucket_name)
+            self.client.download_file(bucket_name, remote_filepath, local_filepath)
 
         logging.info(f"Successfully download folder from {remote_folder_path} to {local_root_path}")
