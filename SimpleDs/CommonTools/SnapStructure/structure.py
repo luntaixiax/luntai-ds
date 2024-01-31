@@ -608,7 +608,7 @@ class SnapshotDataManagerObjStorage(SnapshotDataManagerBase):
         :return:
         """
         filepath = self.get_default_file_path(snap_dt=snap_dt)
-        if self.obja.list_objs(filepath) is None or len(self.s3a.list_objs(filepath)) == 1:
+        if self.obja.list_objs(filepath) is None or len(self.obja.list_objs(filepath)) == 1:
             # it is not folder
             self.obja.delete_obj(remote_path = filepath)
         else:
