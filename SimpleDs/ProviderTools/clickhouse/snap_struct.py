@@ -3,24 +3,30 @@ from __future__ import annotations
 from datetime import date
 import logging
 from typing import List
+import ibis
+from ibis import Schema
 import pandas as pd
 import pyspark
+from clickhouse_connect.driver.tools import insert_file
 from CommonTools.sparker import SparkConnector
 from CommonTools.utils import dt2str, str2dt
 from CommonTools.SnapStructure.structure import SnapshotDataManagerBase
 from ProviderTools.clickhouse.dbapi import ClickHouse, ClickhouseCRUD
 
-
 class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
     """files are saved as clickhouse tables under each schema.table
     """
-
     @classmethod
     def setup(cls, ch_conf: ClickHouse, spark_connector: SparkConnector = None):
         super(SnapshotDataManagerCHSQL, cls).setup(spark_connector = spark_connector)
-        cls.ch_conf = ch_conf
-        cls.ch = ClickhouseCRUD(ch_conf)
-
+        cls._ch_conf = ch_conf
+        cls._ops = ibis.clickhouse.connect(
+            user=ch_conf.username,
+            password=ch_conf.password,
+            host=ch_conf.ip,
+            port=ch_conf.port,
+        )
+        
     def __init__(self, schema:str, table:str, snap_dt_key: str):
         """database management interface
 
@@ -30,52 +36,68 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         """
         super().__init__(schema = schema, table = table)
         self.snap_dt_key = snap_dt_key
-
+        
     def is_exist(self) -> bool:
-        return self.ch.is_exist(schema=self.schema, table=self.table)
+        return self.table in self._ops.list_tables(like = self.table, database = self.schema)
 
-    def init_table(self, primary_keys:List[str], col_schemas: pd.DataFrame, table_note:str = None, overwrite:bool = False):
+    def init_table(self, col_schemas: Schema, primary_keys:List[str] = None, overwrite:bool = False, **settings):
+        """initialize/create table in the underlying data warehouse system
+
+        :param Schema col_schemas: ibis column schema
+        :param List[str] primary_keys: primary keys, defaults to None
+        :param bool overwrite: whether to drop table if exists, defaults to False
+        """
+
         if self.is_exist():
             if overwrite:
-                self.ch.drop_table(schema=self.schema, table=self.table)
+                self.drop()
             else:
-                logging.warning(f"{self.schema}.{self.table} already exists, will do nothing. set overwrite to True if you wish to reset table")
+                logging.warning(f"{self.schema}.{self.table} already exists, will do nothing." 
+                                "set overwrite to True if you wish to reset table")
                 return
         
-        self.ch.create_schema(
-            schema = self.schema
+        # create schema
+        self._ops.create_database(
+            name = self.schema,
+            force = True
         )
-        self.ch.create_table(
-            schema = self.schema,
-            table = self.table,
-            col_schemas = col_schemas,
+        # create table
+        self._ops.create_table(
+            name = self.table,
+            schema = col_schemas,
+            database = self.schema,
             engine = "MergeTree",
-            partition_keys = [self.snap_dt_key],
-            primary_keys = primary_keys,
-            order_keys = primary_keys,
-            table_note = table_note
+            order_by = primary_keys,
+            partition_by = [self.snap_dt_key],
+            settings = settings
         )
-
-    def get_schema(self) -> pd.Series:
+        
+    def get_schema(self) -> Schema:
         """Check dtypes of the given schema/dataset
 
         :return:
         """
-        schema = self.ch.detect_table_schema(self.schema, self.table)
-        return pd.Series(schema['type'].tolist(), index = schema['name'].tolist(), name = 'dtype')
-
+        return self._ops.get_schema(
+            table_name = self.table,
+            database = self.schema
+        )
+        
     def count(self, snap_dt: date) -> int:
-        sql = "SELECT COUNT() FROM {schema:Identifier}.{table:Identifier} WHERE {partition_key:Identifier} = {snap_dt:Date32}"
-        args = dict(schema=self.schema, table=self.table, partition_key = self.snap_dt_key, snap_dt=snap_dt)
-        return self.ch.client.command(cmd = sql, parameters = args)
-
-    def save_qry(self, query: str, snap_dt: date, overwrite: bool = False, keep_view:bool = True, **kws):
+        table = self._ops.table(
+            name = self.table,
+            database = self.schema
+        )
+        return table.count(
+            where = (table[self.snap_dt_key] == snap_dt)
+        ).to_pandas() # convert to a scalar number
+        
+    def save_qry(self, query: str, snap_dt: date, overwrite: bool = False):
         """save the query into the table using "insert into schema.table select ... " clause
 
         :param query: the sql query for table to be inserted
         :param snap_dt: the snap date partition to be inserted, use to check existence
         :param overwrite: whether to overwrite the table if exists
-        :param keep_view: the process will create temp view first, whether to keep that temp view
+
         :return:
         """
         # first detect whether snap date already exists
@@ -86,23 +108,18 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         # first create a view of that table which can be inspected the column dtypes and names
         dt_str = dt2str(snap_dt, format = "%Y%m")
         view_name = f"{self.table}_V_{dt_str}"
-        self.ch.create_view(schema = self.schema, view = view_name, query = query)
-        qry_cols = self.ch.detect_table_schema(schema = self.schema, table = view_name)['name'].tolist()
+        qry_cols = self._ops.sql(query).columns
 
         # insert into the table
-        self.ch.insert_from_select(
-            schema = self.schema,
-            table = self.table,
-            query = query,
-            qry_cols = qry_cols # infered from view
-        )
-
-        # delete the view if required
-        if not keep_view:
-            self.ch.drop_view(schema = self.schema, view = view_name)
+        # clickhouse insert need column order correct
+        sql = f"""
+        INSERT INTO {self.schema}.{self.table} ({','.join(qry_cols)})
+        {query}
+        """
+        self._ops.con.command(sql)
 
         logging.info(f"Successfully saved to {self.schema}.{self.table}@{snap_dt}")
-
+        
     def _save(self, df: pd.DataFrame, snap_dt: date, **kws):
         """The pure logic to save pandas dataframe to the system, without handling existing record problem
 
@@ -110,13 +127,13 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         :param date snap_dt: _description_
         :raises NotImplementedError: _description_
         """
-        self.ch.client.insert_df(
-            table = self.table,
+        self._ops.insert(
+            name = self.table,
+            obj = df,
             database = self.schema,
-            df = df,
             **kws
         )
-
+        
     def ingest_from_file(self, file_path:str, snap_dt: date, header:bool = True, overwrite:bool = True):
         if overwrite:
             self.delete(snap_dt = snap_dt)
@@ -125,58 +142,71 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             if num_records > 0:
                 logging.warning(f"{num_records} records found for {self.schema}.{self.table}@{snap_dt}, will do nothing")
                 return
-
-        self.ch.ingest_file(
-            schema = self.schema,
+            
+        # extract file format
+        if file_path.endswith("parquet"):
+            fmt = "Parquet"
+        elif file_path.endswith("csv"):
+            fmt = "CSVWithNames" if header else "CSV"
+        else:
+            raise TypeError("File not supported")
+        
+        insert_file(
+            client = self._ops.con,
             table = self.table,
+            database = self.schema,
             file_path = file_path,
-            header = header,
-            use_cli = False
+            fmt = fmt,
         )
-
+        logging.info(f"Successfully ingested file {file_path} to {self.schema}.{self.table}")
+        
     def get_existing_snap_dts(self) -> List[date]:
-        sql = f"""
-        select distinct {self.snap_dt_key}
-        from {self.schema}.{self.table}
-        order by {self.snap_dt_key}
-        """
-        existing_snaps = self.ch.client.query_df(sql)
+        existing_snaps = (
+            self._ops.table(
+                name = self.table,
+                database = self.schema
+            ).select(self.snap_dt_key)
+            .distinct()
+            .order_by(self.snap_dt_key)
+            .to_pandas()
+        )
         if len(existing_snaps) == 0:
             return []
-        return list(str2dt(dt.date()) for dt in existing_snaps[self.snap_dt_key].dt.to_pydatetime())
-
+        return list(
+            str2dt(dt.date()) 
+            for dt in pd.to_datetime(existing_snaps[self.snap_dt_key]).dt.to_pydatetime()
+        )
+        
     def read(self, snap_dt: date, **kws) -> pd.DataFrame:
         """Read as pandas dataframe (one snapshot date) data
 
         :param snap_dt: snap_dt to load
         :return:
         """
+        table = self._ops.table(
+            name = self.table,
+            database = self.schema
+        )
+        df = table.filter(table[self.snap_dt_key] == snap_dt)
         if 'columns' in kws:
-            cols = ','.join(kws['columns'])
-        else:
-            cols = '*'
-        sql = f"""
-        select {cols} from {self.schema}.{self.table} where {self.snap_dt_key} = '{snap_dt}'
-        """
-        return self.ch.client.query_df(sql)
-
+            df = df.select(*kws['columns'])
+        return df.to_pandas()
+    
     def reads(self, snap_dts: List[date], **kws) -> pd.DataFrame:
         """reads as pandas dataframe (vertically concat of several given snap dates data)
 
         :param snap_dts: list of snap dates to read
         :return:
         """
+        table = self._ops.table(
+            name = self.table,
+            database = self.schema
+        )
+        df = table.filter(table[self.snap_dt_key].isin(snap_dts))
         if 'columns' in kws:
-            cols = ','.join(kws['columns'])
-        else:
-            cols = '*'
-        snap_dt_range = ",".join(f"'{dt}'" for dt in snap_dts)
-        sql = f"""
-        select {cols} from {self.schema}.{self.table} where {self.snap_dt_key} in [{snap_dt_range}]
-        """
-        return self.ch.client.query_df(sql)
-
-
+            df = df.select(*kws['columns'])
+        return df.to_pandas()
+    
     def load(self, snap_dt: date, **kws) -> pyspark.sql.DataFrame:
         """Read as spark dataframe (one snapshot date) data, and can also access from sc temporary view
 
@@ -217,34 +247,48 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             return df
         else:
             ValueError("No Spark Connector Specified, please call .setup() to bind a spark connector")
-
-
+        
     def delete(self, snap_dt: date):
         """Delete a snap shot dataframe
 
         :param snap_dt: which snap date to delete
         :return:
         """
-        self.ch.delete_data(schema=self.schema, table=self.table, where_clause = f"{self.snap_dt_key} = '{snap_dt}'")
-
+        sql = f"""
+        ALTER TABLE {self.schema}.{self.table} DELETE
+        WHERE {self.snap_dt_key} = '{snap_dt}'
+        """
+        self._ops.con.command(cmd = sql)
+        
     def drop(self):
         """drop the whole table
 
         :return:
         """
-        self.ch.drop_table(schema=self.schema, table=self.table)
-
+        self._ops.drop_table(
+            name = self.table,
+            database = self.schema,
+            force = True
+        )
+        
     def duplicate(self, dst_schema: str, dst_table: str) -> SnapshotDataManagerCHSQL:
-        sql = """insert into {dst_schema:Identifier}.{dst_table:Identifier} select * from {src_schema:Identifier}.{src_table:Identifier}"""
-        args = dict(dst_schema = dst_schema, dst_table = dst_table, src_schema = self.schema, src_table = self.table)
-        self.ch.client.command(cmd = sql, parameters = args)
+        sql = """
+        insert into {dst_schema:Identifier}.{dst_table:Identifier} 
+        select * from {src_schema:Identifier}.{src_table:Identifier}"""
+        args = dict(
+            dst_schema = dst_schema, 
+            dst_table = dst_table, 
+            src_schema = self.schema, 
+            src_table = self.table
+        )
+        self._ops.con.command(cmd = sql, parameters = args)
         new = SnapshotDataManagerCHSQL(
             schema = dst_schema,
             table = dst_table,
             snap_dt_key = self.snap_dt_key
         )
         return new
-
+    
     def disk_space(self, snap_dt, unit='MB') -> float:
         """get the size of the snap date file (pandas) or folder (pyspark partitions)
 
@@ -263,17 +307,9 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             and partition = %(snap_dt)s
         """
         args = dict(schema = self.schema, table =self.table, snap_dt = snap_dt)
-        d = self.ch.client.query(query=sql, parameters=args).first_item
+        d = self._ops.con.query(query=sql, parameters=args).first_item
 
         size_bytes, rows = d['bytes_on_disk'], d['rows']
         scale = {'KB': 1, 'MB': 2, 'GB': 3}.get(unit, 0)
         size = size_bytes / (1024 ** scale)
         return size
-
-    def is_valid(self, snap_dt, rows_threshold: int = 0) -> bool:
-        """Check if the file is valid"""
-        sql = f"""
-        select count() as size from {self.schema}.{self.table} where {self.snap_dt_key} = '{snap_dt}'
-        """
-        rows = self.ch.client.query(query = sql).first_item['size']
-        return rows > rows_threshold
