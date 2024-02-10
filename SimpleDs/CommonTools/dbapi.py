@@ -20,7 +20,7 @@ class baseDbInf:
         """
         self.driver = driver
 
-    def bindServer(self, ip: str, port: int = None, db: str = None):
+    def bindServer(self, ip: str = None, port: int = None, db: str = None):
         """Connect to a database server
 
         :param ip: ip of the server
@@ -169,7 +169,7 @@ class Oracle(baseDbInf):
         super().__init__("oracle+cx_oracle")
         self.connection_type = connection_type
 
-    def bindServer(self, ip: str, port: int = None, db: str = None, sid: str = None):
+    def bindServer(self, ip: str = None, port: int = None, db: str = None, sid: str = None):
         """
 
         :param ip:
