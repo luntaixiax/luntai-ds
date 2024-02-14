@@ -13,8 +13,7 @@ class BigQuery(baseDbInf):
         super().__init__(driver)
         self.project_id = project_id
         self.credentials_path = credentials_path # json file
-        self.ip = 'https://www.googleapis.com/bigquery/v2'
-        self.port = 443
+        self.bindServer(db = None)
 
     def argTempStr(self):
         return "%s"
@@ -30,7 +29,7 @@ class BigQuery(baseDbInf):
         # only used for sqlalchemy driver type
         return f"{self.driver}://{self.project_id}/{self.db}"
     
-    def bindServer(self, ip: str = None, port: int = None, db: str = None):
+    def bindServer(self, ip: str = 'https://www.googleapis.com/bigquery/v2', port: int = 443, db: str = None):
         """Connect to a database server
 
         :param ip: ip of the server

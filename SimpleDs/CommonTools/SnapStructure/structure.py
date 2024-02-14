@@ -11,7 +11,7 @@ import pandas as pd
 import pyspark
 from tqdm.auto import tqdm
 import ibis
-from ibis import Schema, schema
+from ibis.expr.schema import Schema, schema
 from CommonTools.SnapStructure.tools import get_file_list_pattern, match_date_from_str
 from CommonTools.dbapi import baseDbInf, dbIO
 from CommonTools.sparker import SparkConnector
