@@ -10,7 +10,9 @@ import logging
 import pandas as pd
 import pyspark
 from tqdm.auto import tqdm
-
+import ibis
+from ibis.expr.schema import Schema
+from ibis import schema
 from CommonTools.SnapStructure.tools import get_file_list_pattern, match_date_from_str
 from CommonTools.dbapi import baseDbInf, dbIO
 from CommonTools.sparker import SparkConnector
@@ -44,7 +46,7 @@ class SnapshotDataManagerBase:
         """
         raise NotImplementedError("")
     
-    def get_schema(self) -> pd.Series:
+    def get_schema(self) -> Schema:
         """Check dtypes of the given schema/dataset
 
         :return:
@@ -52,10 +54,17 @@ class SnapshotDataManagerBase:
 
         if self.default_engine == 'pandas':
             df_random = self.read_random_snap()
-            return df_random.dtypes
+            schema_ = []
+            for n, t in zip(df_random.columns, df_random.dtypes):
+                # https://numpy.org/doc/stable/reference/generated/numpy.dtype.kind.html
+                if t.kind == 'O':
+                    schema_.append((n, ibis.expr.datatypes.String()))
+                else:
+                    schema_.append((n, ibis.dtype(t)))
+            return schema(schema_)
         if self.default_engine == 'spark':
             df_random = self.load_random_snap()
-            return pd.Series(dict(df_random.dtypes))
+            return Schema.from_pyarrow(df_random.dtypes)
         else:
             raise ValueError("engine can only be spark or pandas")
     

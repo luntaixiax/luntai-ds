@@ -4,27 +4,31 @@ from datetime import date
 import logging
 from typing import List
 import ibis
-from ibis import Schema
+from ibis.expr.schema import Schema
+from ibis import schema
 import pandas as pd
 import pyspark
-from clickhouse_connect.driver.tools import insert_file
+from google.oauth2 import service_account
 from CommonTools.sparker import SparkConnector
 from CommonTools.utils import dt2str, str2dt
 from CommonTools.SnapStructure.structure import SnapshotDataManagerBase
-from ProviderTools.clickhouse.dbapi import ClickHouse, ClickhouseCRUD
+from ProviderTools.gcp.dbapi import BigQuery
 
-class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
-    """files are saved as clickhouse tables under each schema.table
+class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
+    """files are saved as bigquery tables under each schema.table
     """
     @classmethod
-    def setup(cls, db_conf: ClickHouse, spark_connector: SparkConnector = None):
-        super(SnapshotDataManagerCHSQL, cls).setup(spark_connector = spark_connector)
+    def setup(cls, db_conf: BigQuery, spark_connector: SparkConnector = None):
+        super(SnapshotDataManagerBQSQL, cls).setup(spark_connector = spark_connector)
         cls._db_conf = db_conf
-        cls._ops = ibis.clickhouse.connect(
-            user=db_conf.username,
-            password=db_conf.password,
-            host=db_conf.ip,
-            port=db_conf.port,
+        if db_conf.credentials_path:
+            creds = service_account.Credentials.from_service_account_file(db_conf.credentials_path)
+        else:
+            creds = None
+        cls._ops = ibis.bigquery.connect(
+            project_id=db_conf.project_id,
+            dataset_id=db_conf.db,
+            credentials = creds if creds else None
         )
         
     def __init__(self, schema:str, table:str, snap_dt_key: str):
@@ -38,13 +42,14 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         self.snap_dt_key = snap_dt_key
         
     def is_exist(self) -> bool:
-        return self.table in self._ops.list_tables(like = self.table, database = self.schema)
+        return self.table in self._ops.list_tables(like = self.table, schema = self.schema)
 
-    def init_table(self, col_schemas: Schema, primary_keys:List[str] = None, overwrite:bool = False, **settings):
+    def init_table(self, col_schemas: Schema, cluster_keys:List[str] = None, partition_keys: List[str] = None, overwrite:bool = False, **settings):
         """initialize/create table in the underlying data warehouse system
 
         :param Schema col_schemas: ibis column schema
-        :param List[str] primary_keys: primary keys, defaults to None
+        :param List[str] cluster_keys: cluster keys, defaults to None
+        :param List[str] partition_keys: partition keys
         :param bool overwrite: whether to drop table if exists, defaults to False
         """
 
@@ -57,7 +62,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
                 return
         
         # create schema
-        self._ops.create_database(
+        self._ops.create_schema(
             name = self.schema,
             force = True
         )
@@ -66,10 +71,10 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             name = self.table,
             schema = col_schemas,
             database = self.schema,
-            engine = "MergeTree",
-            order_by = primary_keys,
-            partition_by = [self.snap_dt_key],
-            settings = settings
+            overwrite = overwrite,
+            partition_by = partition_keys,
+            cluster_by = cluster_keys,
+            options = settings
         )
         
     def get_schema(self) -> Schema:
@@ -78,14 +83,14 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         :return:
         """
         return self._ops.get_schema(
-            table_name = self.table,
-            database = self.schema
+            name = self.table,
+            schema = self.schema
         )
         
     def count(self, snap_dt: date) -> int:
         table = self._ops.table(
             name = self.table,
-            database = self.schema
+            schema = self.schema
         )
         return table.count(
             where = (table[self.snap_dt_key] == snap_dt)
@@ -111,10 +116,10 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         # insert into the table
         # clickhouse insert need column order correct
         sql = f"""
-        INSERT INTO {self.schema}.{self.table} ({','.join(qry_cols)})
+        INSERT {self.schema}.{self.table} ({','.join(qry_cols)})
         {query}
         """
-        self._ops.con.command(sql)
+        self._ops.raw_sql(query = sql)
 
         logging.info(f"Successfully saved to {self.schema}.{self.table}@{snap_dt}")
         
@@ -125,44 +130,17 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         :param date snap_dt: _description_
         :raises NotImplementedError: _description_
         """
-        self._ops.insert(
-            name = self.table,
-            obj = df,
-            database = self.schema,
+        self._ops.client.load_table_from_dataframe(
+            dataframe = df,
+            destination = f"{self.schema}.{self.table}",
             **kws
         )
-        
-    def ingest_from_file(self, file_path:str, snap_dt: date, header:bool = True, overwrite:bool = True):
-        if overwrite:
-            self.delete(snap_dt = snap_dt)
-        else:
-            num_records = self.count(snap_dt)
-            if num_records > 0:
-                logging.warning(f"{num_records} records found for {self.schema}.{self.table}@{snap_dt}, will do nothing")
-                return
-            
-        # extract file format
-        if file_path.endswith("parquet"):
-            fmt = "Parquet"
-        elif file_path.endswith("csv"):
-            fmt = "CSVWithNames" if header else "CSV"
-        else:
-            raise TypeError("File not supported")
-        
-        insert_file(
-            client = self._ops.con,
-            table = self.table,
-            database = self.schema,
-            file_path = file_path,
-            fmt = fmt,
-        )
-        logging.info(f"Successfully ingested file {file_path} to {self.schema}.{self.table}")
         
     def get_existing_snap_dts(self) -> List[date]:
         existing_snaps = (
             self._ops.table(
                 name = self.table,
-                database = self.schema
+                schema = self.schema
             ).select(self.snap_dt_key)
             .distinct()
             .order_by(self.snap_dt_key)
@@ -183,7 +161,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         """
         table = self._ops.table(
             name = self.table,
-            database = self.schema
+            schema = self.schema
         )
         df = table.filter(table[self.snap_dt_key] == snap_dt)
         if 'columns' in kws:
@@ -198,7 +176,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         """
         table = self._ops.table(
             name = self.table,
-            database = self.schema
+            schema = self.schema
         )
         df = table.filter(table[self.snap_dt_key].isin(snap_dts))
         if 'columns' in kws:
@@ -253,10 +231,10 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         :return:
         """
         sql = f"""
-        ALTER TABLE {self.schema}.{self.table} DELETE
+        DELETE {self.schema}.{self.table}
         WHERE {self.snap_dt_key} = '{snap_dt}'
         """
-        self._ops.con.command(cmd = sql)
+        self._ops.raw_sql(query = sql)
         
     def drop(self):
         """drop the whole table
@@ -265,22 +243,16 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         """
         self._ops.drop_table(
             name = self.table,
-            database = self.schema,
+            schema = self.schema,
             force = True
         )
         
-    def duplicate(self, dst_schema: str, dst_table: str) -> SnapshotDataManagerCHSQL:
-        sql = """
-        insert into {dst_schema:Identifier}.{dst_table:Identifier} 
-        select * from {src_schema:Identifier}.{src_table:Identifier}"""
-        args = dict(
-            dst_schema = dst_schema, 
-            dst_table = dst_table, 
-            src_schema = self.schema, 
-            src_table = self.table
-        )
-        self._ops.con.command(cmd = sql, parameters = args)
-        new = SnapshotDataManagerCHSQL(
+    def duplicate(self, dst_schema: str, dst_table: str) -> SnapshotDataManagerBQSQL:
+        sql = f"""
+        CREATE TABLE {dst_schema}.{dst_table} 
+        COPY {self.schema}.{self.table}"""
+        self._ops.raw_sql(query = sql)
+        new = SnapshotDataManagerBQSQL(
             schema = dst_schema,
             table = dst_table,
             snap_dt_key = self.snap_dt_key
@@ -293,21 +265,20 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         :param snap_dt:
         :param unit: {KB, MB, GB}
         """
-        sql = """
-        select 
-            sum(rows) as rows,
-            sum(bytes_on_disk) as bytes_on_disk
-        from system.parts
-        where 
-            active
-            and database = %(schema)s
-            and table = %(table)s
-            and partition = %(snap_dt)s
-        """
-        args = dict(schema = self.schema, table =self.table, snap_dt = snap_dt)
-        d = self._ops.con.query(query=sql, parameters=args).first_item
-
-        size_bytes, rows = d['bytes_on_disk'], d['rows']
+        tb = self._ops.table(f"{self.schema}.__TABLES__")
+        # we only get total size, no partition size on date
+        summs = (
+            tb
+            .filter(tb['table_id'] == self.table)
+            .agg(
+                size = tb['size_bytes'].sum(),
+                rows = tb['row_count'].sum()
+            )
+            .to_pandas()
+        )
+        size_bytes = summs.loc[0, 'size']
+        rows = summs.loc[0, 'rows']
+        row_snap = self.count(snap_dt)
         scale = {'KB': 1, 'MB': 2, 'GB': 3}.get(unit, 0)
-        size = size_bytes / (1024 ** scale)
+        size = size_bytes * row_snap / (rows * 1024 ** scale)
         return size
