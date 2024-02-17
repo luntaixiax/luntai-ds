@@ -4,7 +4,8 @@ from datetime import date
 import logging
 from typing import List
 import ibis
-from ibis.expr.schema import Schema, schema
+from ibis.expr.schema import Schema
+from ibis import schema
 import pandas as pd
 import pyspark
 from google.oauth2 import service_account
