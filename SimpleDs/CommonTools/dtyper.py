@@ -4,7 +4,8 @@ from enum import Enum
 from typing import Dict
 import yaml
 import numpy as np
-
+import ibis
+from ibis import schema
 
 #### Internal representation types
 class _Dtype:
@@ -376,6 +377,153 @@ class Schema(OrderedDict):
         return schemas
 
 
+
+def extract_dtype(dtype: str, args: dict) -> ibis.expr.datatypes.DataType:
+    if dtype == 'Array':
+        value_type = args.pop('value_type')
+        value_dtype = extract_dtype(value_type['dtype'], value_type['args'])
+        return ibis.expr.datatypes.Array(
+            value_type = value_dtype,
+            **args
+        )
+    elif dtype == 'Map':
+        key_type = args.pop('key_type')
+        key_dtype = extract_dtype(key_type['dtype'], key_type['args'])
+        value_type = args.pop('value_type')
+        value_dtype = extract_dtype(value_type['dtype'], value_type['args'])
+        return ibis.expr.datatypes.Map(
+            key_type = key_dtype,
+            value_type = value_dtype,
+            **args
+        )
+    elif dtype == 'Struct':
+        fields = args.pop("fields")
+        fields_dtype = dict()
+        for k, v in fields.items():
+            v_dtype = extract_dtype(v['dtype'], v['args'])
+            fields_dtype[k] = v_dtype
+        return ibis.expr.datatypes.Struct(
+            fields = fields_dtype,
+            **args
+        )
+    else:
+        return getattr(ibis.expr.datatypes, dtype)(**args)
+
+
+def create_schema_from_dtype_dict(schema_dict: dict) -> schema:
+    """generate ibis schema from schema dictonary
+    ref: https://ibis-project.org/reference/datatypes#ibis.expr.datatypes.core.Timestamp
+
+    :param dict schema_dict: column-dtype pair, support Array/Map/Struct, example:
+        ```json
+        {
+            "CUST_ID":{
+                "dtype":"Int32",
+                "args":{
+                "nullable":false
+                }
+            },
+            "SNAP_DT":{
+                "dtype":"Date",
+                "args":{
+                "nullable":true
+                }
+            },
+            "SAMPLE_ARRAY":{
+                "dtype":"Array",
+                "args":{
+                "value_type":{
+                    "dtype":"String",
+                    "args":{
+                    "nullable":false
+                    }
+                },
+                "nullable":false
+                }
+            },
+            "SAMPLE_MAP":{
+                "dtype":"Map",
+                "args":{
+                "key_type":{
+                    "dtype":"String",
+                    "args":{
+                    "nullable":false
+                    }
+                },
+                "value_type":{
+                    "dtype":"Float64",
+                    "args":{
+                    "nullable":false
+                    }
+                },
+                "nullable":false
+                }
+            },
+            "SAMPLE_NESTED":{
+                "dtype":"Array",
+                "args":{
+                "value_type":{
+                    "dtype":"Map",
+                    "args":{
+                    "key_type":{
+                        "dtype":"String",
+                        "args":{
+                        "nullable":false
+                        }
+                    },
+                    "value_type":{
+                        "dtype":"Int64",
+                        "args":{
+                        "nullable":true
+                        }
+                    },
+                    "nullable":false
+                    }
+                },
+                "nullable":false
+                }
+            },
+            "SAMPLE_STRUCT":{
+                "dtype":"Struct",
+                "args":{
+                "fields":{
+                    "id":{
+                    "dtype":"Int8",
+                    "args":{
+                        "nullable":false
+                    }
+                    },
+                    "trans_dt":{
+                    "dtype":"Timestamp",
+                    "args":{
+                        "timezone":"UTC",
+                        "nullable":false
+                    }
+                    },
+                    "amount":{
+                    "dtype":"Decimal",
+                    "args":{
+                        "precision":10,
+                        "scale":2,
+                        "nullable":false
+                    }
+                    }
+                },
+                "nullable":false
+                }
+            }
+        }
+        ```
+    :return schema: ibis schema
+    """
+    sh = []
+    for col, s in schema_dict.items():
+        dtype = extract_dtype(s['dtype'], s['args'])
+        sh.append(
+            (col, dtype)
+        )
+        
+    return schema(pairs = sh)
 
 if __name__ == '__main__':
     i = Integer(nullable=True, precision=64, signed=False)

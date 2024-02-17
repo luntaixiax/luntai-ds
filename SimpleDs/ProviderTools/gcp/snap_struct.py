@@ -18,7 +18,7 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
     """files are saved as bigquery tables under each schema.table
     """
     @classmethod
-    def setup(cls, db_conf: BigQuery, spark_connector: SparkConnector = None):
+    def setup(cls, db_conf: BigQuery, spark_connector: SparkConnector = None, **settings):
         super(SnapshotDataManagerBQSQL, cls).setup(spark_connector = spark_connector)
         cls._db_conf = db_conf
         if db_conf.credentials_path:
@@ -28,7 +28,8 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
         cls._ops = ibis.bigquery.connect(
             project_id=db_conf.project_id,
             dataset_id=db_conf.db,
-            credentials = creds if creds else None
+            credentials = creds if creds else None,
+            **settings
         )
         
     def __init__(self, schema:str, table:str, snap_dt_key: str):
@@ -66,6 +67,7 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
             name = self.schema,
             force = True
         )
+        logging.info(f"Creating table {self.schema}.{self.table} using schema:\n{col_schemas}")
         # create table
         self._ops.create_table(
             name = self.table,
@@ -119,6 +121,7 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
         INSERT {self.schema}.{self.table} ({','.join(qry_cols)})
         {query}
         """
+        logging.info(f"Inserting into {self.schema}.{self.table}@{snap_dt} using query:\n{sql}")
         self._ops.raw_sql(query = sql)
 
         logging.info(f"Successfully saved to {self.schema}.{self.table}@{snap_dt}")
@@ -234,6 +237,7 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
         DELETE {self.schema}.{self.table}
         WHERE {self.snap_dt_key} = '{snap_dt}'
         """
+        logging.info(f"Deleting table {self.schema}.{self.table} using query:\n{sql}")
         self._ops.raw_sql(query = sql)
         
     def drop(self):

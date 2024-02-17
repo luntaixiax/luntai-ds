@@ -17,7 +17,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
     """files are saved as clickhouse tables under each schema.table
     """
     @classmethod
-    def setup(cls, db_conf: ClickHouse, spark_connector: SparkConnector = None):
+    def setup(cls, db_conf: ClickHouse, spark_connector: SparkConnector = None, **settings):
         super(SnapshotDataManagerCHSQL, cls).setup(spark_connector = spark_connector)
         cls._db_conf = db_conf
         cls._ops = ibis.clickhouse.connect(
@@ -25,6 +25,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             password=db_conf.password,
             host=db_conf.ip,
             port=db_conf.port,
+            **settings
         )
         
     def __init__(self, schema:str, table:str, snap_dt_key: str):
@@ -62,6 +63,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             force = True
         )
         # create table
+        logging.info(f"Creating table {self.schema}.{self.table} using schema:\n{col_schemas}")
         self._ops.create_table(
             name = self.table,
             schema = col_schemas,
@@ -114,6 +116,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         INSERT INTO {self.schema}.{self.table} ({','.join(qry_cols)})
         {query}
         """
+        logging.info(f"Inserting into {self.schema}.{self.table}@{snap_dt} using query:\n{sql}")
         self._ops.con.command(sql)
 
         logging.info(f"Successfully saved to {self.schema}.{self.table}@{snap_dt}")
@@ -256,6 +259,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         ALTER TABLE {self.schema}.{self.table} DELETE
         WHERE {self.snap_dt_key} = '{snap_dt}'
         """
+        logging.info(f"Deleting table {self.schema}.{self.table} using query:\n{sql}")
         self._ops.con.command(cmd = sql)
         
     def drop(self):

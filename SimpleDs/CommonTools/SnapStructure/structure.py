@@ -105,6 +105,7 @@ class SnapshotDataManagerBase:
         if not self.pre_save_check(snap_dt = snap_dt, overwrite = overwrite):
             return
         
+        logging.info(f"Saving dataframe, shape {df.shape}, into {self.schema}.{self.table}")
         self._save(df = df, snap_dt = snap_dt, **kws)
         logging.info(f"Successfully saved {len(df)} records to {self.schema}.{self.table}@{snap_dt}")
 
