@@ -1,384 +1,15 @@
 import logging
+from dataclasses import dataclass, asdict
+from dacite import from_dict
 from collections import OrderedDict
 from enum import Enum
-from typing import Dict
-import yaml
-import numpy as np
+from typing import Dict, List, Any, Optional
 import ibis
 from ibis import schema
+from ibis.expr.schema import Schema
+from ibis.expr.datatypes import DataType
 
-#### Internal representation types
-class _Dtype:
-    def collect_args(self) -> dict:
-        return {}
-
-    def to_config(self) -> dict:
-        return {
-            "type": self.__class__.__name__,
-            "args": self.collect_args()
-        }
-
-    @classmethod
-    def from_config(cls, config: dict):
-        template = config['type']
-        params = config['args']
-        mapping = {
-            'bool' : Bool,
-            'integer' : Integer,
-            'float' : Float,
-            'decimal' : Decimal,
-            'string' : String,
-            'datet' : DateT,
-            'datetimet': DateTimeT,
-            'array': Array,
-            'map': Map
-        }
-        block = mapping.get(template.lower()) # the class of relavant dtype
-        return block.from_args(params)
-
-class _BaseDtype(_Dtype):
-    def __init__(self, nullable:bool = True):
-        self.nullable = bool(nullable)
-
-    @classmethod
-    def from_args(cls, args:dict):
-        # de-serialize
-        return cls(**args)
-
-    def __repr__(self):
-        return self.__str__()
-
-    def collect_args(self) -> dict:
-        return dict(nullable = self.nullable)
-
-class Integer(_BaseDtype):
-    def __init__(self, nullable:bool = True, precision: int = 32, signed:bool = True):
-        super().__init__(nullable)
-        self.precision = int(precision)
-        self.signed = bool(signed)
-
-    def __str__(self):
-        # will use numpy type
-        return f"Integer{self.precision}(null={self.nullable}, signed={self.signed})"
-
-    def collect_args(self) -> dict:
-        return dict(nullable = self.nullable, precision = self.precision, signed = self.signed)
-
-
-class Decimal(_BaseDtype):
-    def __init__(self, nullable: bool = True, precision: int = 10, scale: int = 2):
-        super().__init__(nullable)
-        self.precision = int(precision)
-        self.scale = int(scale)
-
-    def __str__(self):
-        return f"Decimal({self.precision}, {self.scale}, null={self.nullable})"
-
-    def collect_args(self) -> dict:
-        return dict(nullable = self.nullable, precision = self.precision, scale = self.scale)
-
-class Float(_BaseDtype):
-    def __init__(self, nullable: bool = True, precision: int = 32):
-        super().__init__(nullable)
-        self.precision = int(precision)
-
-    def __str__(self):
-        return f"Float{self.precision}(null={self.nullable})"
-
-    def collect_args(self) -> dict:
-        return dict(nullable = self.nullable, precision = self.precision)
-
-class Bool(_BaseDtype):
-    def __str__(self):
-        return f"Bool(null={self.nullable})"
-
-class String(_BaseDtype):
-    def __str__(self):
-        return f"String(null={self.nullable})"
-
-class DateT(_BaseDtype):
-    def __str__(self):
-        return f"DateT(null={self.nullable})"
-
-class DateTimeT(_BaseDtype):
-    def __init__(self, nullable: bool = True, precision:float = 0, tz: str = None):
-        super().__init__(nullable)
-        self.precision = precision
-        self.tz = str(tz)  # whether timezone aware
-
-    def __str__(self):
-        return f"DateTimeT(null={self.nullable}, precision = {self.precision}, tz={self.tz})"
-
-    def collect_args(self) -> dict:
-        return dict(nullable = self.nullable, precision = self.precision, tz = self.tz)
-
-class _ComplexDtype(_Dtype):
-    pass
-
-class Array(_ComplexDtype):
-    def __init__(self, element_dtype: _Dtype):
-        self.element_dtype = element_dtype
-
-    def __str__(self):
-        return f"Array<{self.element_dtype}>"
-
-    @classmethod
-    def from_args(cls, args: dict):
-        # de-serialize
-        element_config = args['element_dtype']
-        return cls(element_dtype = _Dtype.from_config(element_config))
-
-    def collect_args(self) -> dict:
-        return dict(element_dtype = self.element_dtype.to_config())
-
-class Map(_ComplexDtype):
-    def __init__(self, key_dtype: _BaseDtype, value_dtype: _Dtype):
-        self.key_dtype = key_dtype
-        self.value_dtype = value_dtype
-
-    def __str__(self):
-        return f"Map<{self.key_dtype},{self.value_dtype}>"
-
-    @classmethod
-    def from_args(cls, args: dict):
-        # de-serialize
-        key_config = args['key_dtype']
-        value_config = args['value_dtype']
-
-        return cls(
-            key_dtype = _Dtype.from_config(key_config),
-            value_dtype = _Dtype.from_config(value_config)
-        )
-
-    def collect_args(self) -> dict:
-        return dict(key_dtype = self.key_dtype.to_config(), value_dtype = self.value_dtype.to_config())
-
-##### language specific interface
-
-def check_auto_cast_precision(precision: int, supported_precision: list, force_cap: bool = False):
-    if precision in supported_precision:
-        # pass check
-        return precision
-    # if not, will cast to a bigger precision
-    idx = np.searchsorted(supported_precision, precision, side='left')
-    if idx >= len(supported_precision):
-        if force_cap:
-            logging.warning(f"Max precision exceeded, will force precision cap to {max(supported_precision)}")
-            return max(supported_precision)
-        raise TypeError(
-            f"Precision Overflow, max support precision: {max(supported_precision)}, provided precision: {precision}")
-    return supported_precision[idx]
-
-class _DtypeBase:
-    @classmethod
-    def translate(cls, d: _Dtype) -> str:
-        # auto detect what type is
-        cls_name = d.__class__.__name__
-        func = getattr(cls, f"to{cls_name}")
-        return func(d)
-
-    @classmethod
-    def toInteger(cls, d: Integer) -> str:
-        raise NotImplementedError
-
-    @classmethod
-    def toDecimal(cls, d: Decimal) -> str:
-        raise NotImplementedError
-
-    @classmethod
-    def toFloat(cls, d: Float) -> str:
-        raise NotImplementedError
-
-    @classmethod
-    def toBool(cls, d: Bool) -> str:
-        raise NotImplementedError
-
-    @classmethod
-    def toString(cls, d: String) -> str:
-        raise NotImplementedError
-
-    @classmethod
-    def toDateT(cls, d: DateT) -> str:
-        raise NotImplementedError
-
-    @classmethod
-    def toDateTimeT(cls, d: DateTimeT) -> str:
-        raise NotImplementedError
-
-    @classmethod
-    def toArray(cls, d: Array) -> str:
-        raise NotImplementedError
-
-    @classmethod
-    def toMap(cls, d: Map) -> str:
-        raise NotImplementedError
-
-class DtypePandas(_DtypeBase):
-    @classmethod
-    def toInteger(cls, d: Integer) -> str:
-        precision = check_auto_cast_precision(
-            d.precision,
-            supported_precision=[8, 16, 32, 64]
-        )
-        if d.nullable:
-            # will use pandas extended type
-            base = f"Int{precision}"
-            if not d.signed:
-                base = "U" + base
-        else:
-            # will use numpy type
-            base = f"int{precision}"
-            if not d.signed:
-                base = "u" + base
-
-        return base
-
-    @classmethod
-    def toDecimal(cls, d: Decimal) -> str:
-        return "float64"
-
-    @classmethod
-    def toFloat(cls, d: Float) -> str:
-        precision = check_auto_cast_precision(
-            d.precision,
-            supported_precision=[32, 64]
-        )
-        return f"float{precision}"
-
-    @classmethod
-    def toBool(cls, d: Bool) -> str:
-        if d.nullable:
-            return "boolean" # pandas extended type - nullable
-        return "bool" # pandas original type
-
-    @classmethod
-    def toString(cls, d: String) -> str:
-        return "string"
-
-    @classmethod
-    def toDateT(cls, d: DateT) -> str:
-        # no date/datetime diff
-        return "datetime64[ns]"
-
-    @classmethod
-    def toDateTimeT(cls, d: DateTimeT) -> str:
-        if d.tz is not None:
-            return f"datetime64[ns, {d.tz}]" # timezone aware type
-        return "datetime64[ns]"
-
-class DtypeSparkSQL(_DtypeBase):
-    @classmethod
-    def toInteger(cls, d: Integer) -> str:
-        precision = check_auto_cast_precision(
-            d.precision,
-            supported_precision=[8, 16, 32, 64]
-        )
-        return {
-            8: 'Byte',
-            16: 'Short',
-            32: 'Integer',
-            64: 'Long'
-        }.get(precision)
-
-    @classmethod
-    def toDecimal(cls, d: Decimal) -> str:
-        return f"Decimal({d.precision},{d.scale})"
-
-    @classmethod
-    def toFloat(cls, d: Float) -> str:
-        precision = check_auto_cast_precision(
-            d.precision,
-            supported_precision=[32, 64]
-        )
-        return {
-            32: 'Float',
-            64: 'Double'
-        }.get(precision)
-
-    @classmethod
-    def toBool(cls, d: Bool) -> str:
-        return "Boolean"
-
-    @classmethod
-    def toString(cls, d: String) -> str:
-        return "String"
-
-    @classmethod
-    def toDateT(cls, d: DateT) -> str:
-        return "Date"
-
-    @classmethod
-    def toDateTimeT(cls, d: DateTimeT) -> str:
-        return "TimeStamp"
-
-    @classmethod
-    def toArray(cls, d: Array) -> str:
-        e = d.element_dtype
-        cls_name = e.__class__.__name__
-        func = getattr(DtypeSparkSQL, f"to{cls_name}")
-        base = func(e)
-        return f"Array<{base}>"
-
-    @classmethod
-    def toMap(cls, d: Map) -> str:
-        k = d.key_dtype
-        v = d.value_dtype
-        k_cls = k.__class__.__name__
-        v_cls = v.__class__.__name__
-        func_k = getattr(DtypeSparkSQL, f"to{k_cls}")
-        func_v = getattr(DtypeSparkSQL, f"to{v_cls}")
-        base_k = func_k(k)
-        base_v = func_v(v)
-        return f"Map<{base_k},{base_v}>"
-
-
-######### Schema handling -- batch conversion
-
-class Schema(OrderedDict):
-    def __init__(self, schema_mapper: Dict[str, _Dtype]):
-        """create Schema object from predefined schema
-
-        :param schema_mapper: {feature_name, feature_type} type should use dtyper._Dtype
-        """
-        super().__init__(**schema_mapper)
-
-    def to_js(self) -> OrderedDict:
-        r = OrderedDict()
-        for col, dtype in self.items():
-            r[col] = dtype.to_config()
-        return r
-    
-    def to_yaml(self, filename: str):
-        with open(filename, 'w') as obj:
-            yaml.dump(
-                self.to_js(), 
-                obj,
-                default_flow_style=False, 
-                sort_keys=False
-            )
-
-    @classmethod
-    def from_js(cls, js: OrderedDict):
-        """create Schema object from dictionary (json format)
-
-        :param schema:
-        :return: Schema()
-        """
-        s = Schema({})
-        for col, config in js.items():
-            s[col] = _Dtype.from_config(config)
-        return s
-    
-    @classmethod
-    def from_yaml(cls, filename: str):
-        with open(filename, 'r') as obj:
-            tt = yaml.load(obj, Loader=yaml.Loader)
-            schemas = cls.from_js(tt)
-        return schemas
-
-
-
-def extract_dtype(dtype: str, args: dict) -> ibis.expr.datatypes.DataType:
+def extract_dtype(dtype: str, args: dict) -> DataType:
     if dtype == 'Array':
         value_type = args.pop('value_type')
         value_dtype = extract_dtype(value_type['dtype'], value_type['args'])
@@ -409,138 +40,191 @@ def extract_dtype(dtype: str, args: dict) -> ibis.expr.datatypes.DataType:
     else:
         return getattr(ibis.expr.datatypes, dtype)(**args)
 
+@dataclass
+class DSchemaField:
+    """data schema field structure
 
-def create_schema_from_dtype_dict(schema_dict: dict) -> schema:
-    """generate ibis schema from schema dictonary
-    ref: https://ibis-project.org/reference/datatypes#ibis.expr.datatypes.core.Timestamp
-
-    :param dict schema_dict: column-dtype pair, support Array/Map/Struct, example:
-        ```json
-        {
-            "CUST_ID":{
-                "dtype":"Int32",
-                "args":{
-                "nullable":false
-                }
+    :param dtype: a string representing the basic type, support Array, Map, Struct
+        from from https://ibis-project.org/reference/datatypes
+    :param args: the argument for each schema fields, e.g., nullable: true
+    :param primary_key: whether this field is part of primary key
+    :param descr: a description
+    :param extra_kws: extra keyword argument may be useful
+    
+    example settings:
+        "CUST_ID" : {
+            "dtype":"Int64",
+            "args":{
+                "nullable": false
             },
-            "SNAP_DT":{
-                "dtype":"Date",
-                "args":{
-                "nullable":true
-                }
+            "descr" : "customer id",
+            "primary_key" : true
+        },
+        "SNAP_DT" : {
+            "dtype":"Date",
+            "args":{
+                "nullable": false
             },
-            "SAMPLE_ARRAY":{
-                "dtype":"Array",
-                "args":{
+            "descr" : "observation snapshot date",
+            "primary_key" : true
+        },
+        "NAME" : {
+            "dtype":"String",
+            "args":{
+                "nullable": false
+            },
+            "descr" : "first and last name",
+            "primary_key" : false
+        },            
+        "SAMPLE_ARRAY":{
+            "dtype":"Array",
+            "args":{
                 "value_type":{
                     "dtype":"String",
                     "args":{
-                    "nullable":false
+                        "nullable":false
                     }
                 },
                 "nullable":false
-                }
             },
-            "SAMPLE_MAP":{
-                "dtype":"Map",
-                "args":{
+            "descr" : "sample array",
+        },
+        "SAMPLE_MAP":{
+            "dtype":"Map",
+            "args":{
                 "key_type":{
                     "dtype":"String",
                     "args":{
-                    "nullable":false
+                        "nullable":false
                     }
                 },
                 "value_type":{
                     "dtype":"Float64",
                     "args":{
-                    "nullable":false
+                        "nullable":false
                     }
                 },
                 "nullable":false
-                }
             },
-            "SAMPLE_NESTED":{
-                "dtype":"Array",
-                "args":{
+            "descr" : "sample map",
+        },
+        "SAMPLE_NESTED":{
+            "dtype":"Array",
+            "args":{
                 "value_type":{
                     "dtype":"Map",
                     "args":{
-                    "key_type":{
-                        "dtype":"String",
-                        "args":{
+                        "key_type":{
+                            "dtype":"String",
+                            "args":{
+                                "nullable":false
+                            }
+                        },
+                        "value_type":{
+                            "dtype":"Int64",
+                            "args":{
+                                "nullable":true
+                            }
+                        },
                         "nullable":false
-                        }
-                    },
-                    "value_type":{
-                        "dtype":"Int64",
-                        "args":{
-                        "nullable":true
-                        }
-                    },
-                    "nullable":false
                     }
                 },
                 "nullable":false
-                }
             },
-            "SAMPLE_STRUCT":{
-                "dtype":"Struct",
-                "args":{
+            "descr" : "sample nested",
+        },
+        "SAMPLE_STRUCT":{
+            "dtype":"Struct",
+            "args":{
                 "fields":{
                     "id":{
-                    "dtype":"Int8",
-                    "args":{
-                        "nullable":false
-                    }
+                        "dtype":"Int8",
+                        "args":{
+                            "nullable":false
+                        }
                     },
                     "trans_dt":{
-                    "dtype":"Timestamp",
-                    "args":{
-                        "timezone":"UTC",
-                        "nullable":false
-                    }
+                        "dtype":"Timestamp",
+                        "args":{
+                            "timezone":"UTC",
+                            "nullable":false
+                        }
                     },
                     "amount":{
                     "dtype":"Decimal",
-                    "args":{
-                        "precision":10,
-                        "scale":2,
-                        "nullable":false
-                    }
+                        "args":{
+                            "precision":10,
+                            "scale":2,
+                            "nullable":false
+                        }
                     }
                 },
                 "nullable":false
-                }
-            }
+            },
+            "descr" : "sample struct",
         }
-        ```
-    :return schema: ibis schema
     """
-    sh = []
-    for col, s in schema_dict.items():
-        dtype = extract_dtype(s['dtype'], s['args'])
-        sh.append(
-            (col, dtype)
-        )
+    dtype: str
+    args: Dict[str, Any]
+    primary_key: bool = False
+    descr: Optional[str] = None
+    extra_kws: Optional[Dict[str, Any]] = None
+    
+    @property
+    def ibis_dtype(self) -> DataType:
+        return extract_dtype(dtype = self.dtype, args = self.args)
+
+
+class DSchema(OrderedDict):
+    def __init__(self, dschema_fields: Dict[str, DSchemaField]):
+        """create DSchema object from predefined dschema fields
+
+        :param dschema_fields: {feature_name, feature_type} type should use DSchemaField
+        """
+        super().__init__(**dschema_fields)
         
-    return schema(pairs = sh)
+    @property
+    def ibis_schema(self) -> Schema:
+        sh = []
+        for col, schema_field in self.items():
+            sh.append(
+                (col, schema_field.ibis_dtype)
+            )
+            
+        return schema(pairs = sh)
+    
+    @property
+    def pks(self) -> List[str]:
+        # return primary keys
+        return [k for k, v in self.items() if v.primary_key]
+    
+    @property
+    def descrs(self) -> Dict[str, str]:
+        # extract any column descriptions
+        return {k: v.descr for k, v in self.items() if v.descr}
+            
+    @classmethod
+    def from_js(cls, js: OrderedDict):
+        """create DSchema object from dictionary (json format)
+
+        :param js: the dictionary of configs, example see DSchemaField doc
+        :return: DSchema
+        """
+        s = DSchema({})
+        for col, config in js.items():
+            s[col] = from_dict(
+                data_class = DSchemaField,
+                data = config
+            )
+        return s
+    
+    def to_js(self) -> OrderedDict:
+        r = OrderedDict()
+        for col, schema_field in self.items():
+            r[col] = asdict(schema_field)
+        return r
+    
+    
 
 if __name__ == '__main__':
-    i = Integer(nullable=True, precision=64, signed=False)
-    print(i)
-    print(DtypeSparkSQL.toInteger(i), DtypeSparkSQL.translate(i))
-
-    f = Array(Integer(nullable=True, precision=64, signed=False))
-    print(f)
-    print(DtypeSparkSQL.toArray(f), DtypeSparkSQL.translate(f))
-
-    m = Map(
-        String(nullable=False),
-        Integer(nullable=True, precision=64, signed=False),
-    )
-    print(m)
-
-    print(i.to_config())
-    print(m.to_config())
-    print(Array.from_config(f.to_config()))
-    print(Map.from_config(m.to_config()))
+    pass

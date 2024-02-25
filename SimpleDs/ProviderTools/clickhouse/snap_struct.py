@@ -10,8 +10,9 @@ import pyspark
 from clickhouse_connect.driver.tools import insert_file
 from CommonTools.sparker import SparkConnector
 from CommonTools.utils import dt2str, str2dt
+from CommonTools.dtyper import DSchema
 from CommonTools.SnapStructure.structure import SnapshotDataManagerBase
-from ProviderTools.clickhouse.dbapi import ClickHouse, ClickhouseCRUD
+from ProviderTools.clickhouse.dbapi import ClickHouse
 
 class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
     """files are saved as clickhouse tables under each schema.table
@@ -41,10 +42,10 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
     def is_exist(self) -> bool:
         return self.table in self._ops.list_tables(like = self.table, database = self.schema)
 
-    def init_table(self, col_schemas: Schema, primary_keys:List[str] = None, overwrite:bool = False, **settings):
+    def init_table(self, col_schemas: DSchema, overwrite:bool = False, **settings):
         """initialize/create table in the underlying data warehouse system
 
-        :param Schema col_schemas: ibis column schema
+        :param DSchema col_schemas: data column schema
         :param List[str] primary_keys: primary keys, defaults to None
         :param bool overwrite: whether to drop table if exists, defaults to False
         """
@@ -63,16 +64,28 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             force = True
         )
         # create table
-        logging.info(f"Creating table {self.schema}.{self.table} using schema:\n{col_schemas}")
+        pks = col_schemas.pks
+        logging.info(f"Creating table {self.schema}.{self.table} using schema:\n{col_schemas.ibis_schema}")
+        logging.info(f"primary keys = {pks}")
         self._ops.create_table(
             name = self.table,
-            schema = col_schemas,
+            schema = col_schemas.ibis_schema,
             database = self.schema,
             engine = "MergeTree",
-            order_by = primary_keys,
+            order_by = pks,
             partition_by = [self.snap_dt_key],
             settings = settings
         )
+        # add column descriptions
+        descrs = col_schemas.descrs
+        for col, descr in descrs.items():
+            try:
+                sql = f"""
+                ALTER TABLE {self.schema}.{self.table} 
+                COMMENT COLUMN IF EXISTS {col} '{descr}'"""
+                self._ops.con.command(sql)
+            except:
+                pass
         
     def get_schema(self) -> Schema:
         """Check dtypes of the given schema/dataset

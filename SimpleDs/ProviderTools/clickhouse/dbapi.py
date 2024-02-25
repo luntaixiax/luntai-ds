@@ -5,11 +5,9 @@ from typing import List, Tuple
 import clickhouse_connect
 from clickhouse_connect.driver.tools import insert_file
 import pandas as pd
-import yaml
 
 from CommonTools.dbapi import baseDbInf
 from CommonTools.dtyper import Schema
-from ProviderTools.clickhouse.dtyper import DtypeClickHouse
 
 class ClickHouse(baseDbInf):
     def __init__(self, driver="clickhouse+native"):
@@ -59,22 +57,6 @@ class ClickhouseSchema:
             dtype_dict=schema_df['dtype'].to_dict(),
             default_dict=schema_df['default'].dropna().to_dict(),
             note_dict=schema_df['note'].dropna().to_dict(),
-        )
-
-    @classmethod
-    def from_pydtype(cls, pytype_yml: str = None, pytype_dict: dict = None, default_dict: dict = None,
-                     note_dict: dict = None):
-        if pytype_yml is not None:
-            with open(pytype_yml, 'r') as obj:
-                pytype_dict = yaml.load(obj, Loader=yaml.Loader)
-
-        schemas = Schema.from_js(pytype_dict)
-        schemas = pd.Series(schemas)
-        schemas = schemas.apply(DtypeClickHouse.translate).to_dict()
-        return cls(
-            dtype_dict=schemas,
-            default_dict=default_dict,
-            note_dict=note_dict
         )
 
     def to_sql(self) -> str:
