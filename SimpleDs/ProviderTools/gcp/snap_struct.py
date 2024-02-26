@@ -5,12 +5,12 @@ import logging
 from typing import List
 import ibis
 from ibis.expr.schema import Schema
-from ibis import schema
 import pandas as pd
 import pyspark
 from google.oauth2 import service_account
 from CommonTools.sparker import SparkConnector
 from CommonTools.utils import dt2str, str2dt
+from CommonTools.dtyper import DSchema
 from CommonTools.SnapStructure.structure import SnapshotDataManagerBase
 from ProviderTools.gcp.dbapi import BigQuery
 
@@ -45,12 +45,10 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
     def is_exist(self) -> bool:
         return self.table in self._ops.list_tables(like = self.table, schema = self.schema)
 
-    def init_table(self, col_schemas: Schema, cluster_keys:List[str] = None, partition_keys: List[str] = None, overwrite:bool = False, **settings):
+    def init_table(self, col_schemas: DSchema, overwrite:bool = False, **settings):
         """initialize/create table in the underlying data warehouse system
 
-        :param Schema col_schemas: ibis column schema
-        :param List[str] cluster_keys: cluster keys, defaults to None
-        :param List[str] partition_keys: partition keys
+        :param DSchema col_schemas: data column schema
         :param bool overwrite: whether to drop table if exists, defaults to False
         """
 
@@ -67,17 +65,37 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
             name = self.schema,
             force = True
         )
-        logging.info(f"Creating table {self.schema}.{self.table} using schema:\n{col_schemas}")
+        # create table
+        primary_keys = col_schemas.primary_keys
+        partition_keys = col_schemas.partition_keys
+        if self.snap_dt_key not in partition_keys:
+            partition_keys.append(self.snap_dt_key)
+        cluster_keys = col_schemas.cluster_keys
+        logging.info(f"Creating table {self.schema}.{self.table} using schema:\n{col_schemas.ibis_schema}")
+        logging.info(f"primary keys = {primary_keys}, partition_keys = {partition_keys}")
         # create table
         self._ops.create_table(
             name = self.table,
-            schema = col_schemas,
+            schema = col_schemas.ibis_schema,
             database = self.schema,
             overwrite = overwrite,
             partition_by = partition_keys,
             cluster_by = cluster_keys,
             options = settings
         )
+        # add column descriptions
+        descrs = col_schemas.descrs
+        for col, descr in descrs.items():
+            try:
+                sql = f"""
+                ALTER TABLE {self.schema}.{self.table} 
+                ALTER COLUMN {col} 
+                SET OPTIONS (
+                    description="{descr}"
+                )"""
+                self._ops.con.command(sql)
+            except:
+                pass
         
     def get_schema(self) -> Schema:
         """Check dtypes of the given schema/dataset

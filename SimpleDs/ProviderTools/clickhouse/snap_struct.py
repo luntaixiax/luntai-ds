@@ -64,16 +64,19 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             force = True
         )
         # create table
-        pks = col_schemas.pks
+        primary_keys = col_schemas.primary_keys
+        partition_keys = col_schemas.partition_keys
+        if self.snap_dt_key not in partition_keys:
+            partition_keys.append(self.snap_dt_key)
         logging.info(f"Creating table {self.schema}.{self.table} using schema:\n{col_schemas.ibis_schema}")
-        logging.info(f"primary keys = {pks}")
+        logging.info(f"primary keys = {primary_keys}, partition_keys = {partition_keys}")
         self._ops.create_table(
             name = self.table,
             schema = col_schemas.ibis_schema,
             database = self.schema,
             engine = "MergeTree",
-            order_by = pks,
-            partition_by = [self.snap_dt_key],
+            order_by = primary_keys,
+            partition_by = partition_keys,
             settings = settings
         )
         # add column descriptions

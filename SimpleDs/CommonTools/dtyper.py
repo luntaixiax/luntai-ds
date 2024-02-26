@@ -167,6 +167,8 @@ class DSchemaField:
     dtype: str
     args: Dict[str, Any]
     primary_key: bool = False
+    cluster_key: bool = False
+    partition_key: bool = False
     descr: Optional[str] = None
     extra_kws: Optional[Dict[str, Any]] = None
     
@@ -194,9 +196,19 @@ class DSchema(OrderedDict):
         return schema(pairs = sh)
     
     @property
-    def pks(self) -> List[str]:
+    def primary_keys(self) -> List[str]:
         # return primary keys
         return [k for k, v in self.items() if v.primary_key]
+    
+    @property
+    def cluster_keys(self) -> List[str]:
+        # return primary keys
+        return [k for k, v in self.items() if v.cluster_key]
+    
+    @property
+    def partition_keys(self) -> List[str]:
+        # return primary keys
+        return [k for k, v in self.items() if v.partition_key]
     
     @property
     def descrs(self) -> Dict[str, str]:
