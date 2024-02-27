@@ -1,7 +1,7 @@
 from configparser import ConfigParser
+import toml
 from getpass import getpass
 from typing import List
-
 from CommonTools.settings import SETTINGS
 
 def get_credential(section: str, attr_keys: List[str] = None):
@@ -21,14 +21,23 @@ def get_credential(section: str, attr_keys: List[str] = None):
             values.append(v)
         return values
     else:
-        config = ConfigParser()
-        config.read(SETTINGS.DB_CREDENTIAL_PATH)
-        sec = config[section]
+        credential_path = SETTINGS.DB_CREDENTIAL_PATH
+        if credential_path.endswith(".ini"):
+            config = ConfigParser()
+            config.read()
+            sec = config[section]
+        elif credential_path.endswith(".toml"):
+            with open(credential_path) as obj:
+                config = toml.load(obj)
+                sec = config[section]
+        else:
+            raise TypeError("Only support file format .ini or .toml")
+        
         values = []
         for attr in attr_keys:
             v = sec[attr]
             values.append(v)
         return values
-
+    
 if __name__ == '__main__':
     SETTINGS.SET_CREDENTIAL_INTERACTIVE()

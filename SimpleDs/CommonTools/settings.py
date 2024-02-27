@@ -19,12 +19,12 @@ class SETTINGS:
     def SET_CREDENTIAL_PATH(cls, path = None):
         """set to script mode, and specify a credential ini file path
 
-        :param path: should be an .ini configure ration file following the below format:
+        :param path: should be an .ini or .toml configuration file following the below format:
         :return:
 
         example credential.ini:
         [Database]
-        username = s1460341
+        username = xxxxxxx
         password = xxxxxxx
         """
         cls.DB_CREDENTIAL_INTERACTIVE = False

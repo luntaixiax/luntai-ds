@@ -216,7 +216,7 @@ class DSchema(OrderedDict):
         return {k: v.descr for k, v in self.items() if v.descr}
             
     @classmethod
-    def from_js(cls, js: OrderedDict):
+    def from_js(cls, js: dict):
         """create DSchema object from dictionary (json format)
 
         :param js: the dictionary of configs, example see DSchemaField doc
