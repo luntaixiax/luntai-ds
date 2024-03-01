@@ -236,3 +236,12 @@ class SFTP:
             else:
                 size = stat.st_size
         return size
+    
+    def exist(self, path: str) -> bool:
+        with self.getSFTP() as sftp:
+            try:
+                sftp.stat(path)
+            except FileNotFoundError:
+                return False
+            else:
+                return True

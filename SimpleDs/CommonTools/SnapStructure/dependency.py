@@ -93,6 +93,14 @@ class ExecPlan:
 class SnapTableStreamGenerator:
     dm: SnapshotDataManagerBase = None
     upstreams: List[_CurrentStream] = []
+    
+    @classmethod
+    def init(cls, snap_dt: date):
+        """do some initialization if not exist or ready
+
+        :param date snap_dt: _description_
+        """
+        pass
 
     @classmethod
     def execute(cls, snap_dt: date):
@@ -135,13 +143,17 @@ class SnapTableStreamGenerator:
         :param date snap_dt: _description_
         """
         snap_dt = str2dt(snap_dt)
-        if snap_dt in cls.dm.get_existing_snap_dts():
-            if cls.if_success(snap_dt):
-                logging.info(f"Already extracted for {cls.dm}@{snap_dt}, will bypass")
-                return
-            else:
-                logging.warning(f"Existing records not valid for {cls.dm}@{snap_dt}, will rerun")
-                cls.dm.delete(snap_dt)
+        if cls.dm.exist():
+            if snap_dt in cls.dm.get_existing_snap_dts():
+                if cls.if_success(snap_dt):
+                    logging.info(f"Already extracted for {cls.dm}@{snap_dt}, will bypass")
+                    return
+                else:
+                    logging.warning(f"Existing records not valid for {cls.dm}@{snap_dt}, will rerun")
+                    cls.dm.delete(snap_dt)
+        else:
+            logging.info(f"Table-Schema does not exist, will initialize")
+            cls.init(snap_dt)
 
         # check upstream table recursively and make up any missing files
         for up in cls.upstreams:

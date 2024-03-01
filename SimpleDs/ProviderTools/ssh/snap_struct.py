@@ -37,6 +37,14 @@ class SnapshotDataManagerSFTP(SnapshotDataManagerBase):
         dir = os.path.join(self.ROOT_DIR, schema, table)
         self.dir = dir  # the root path of the table under each schema
         self.init_table()
+        
+    def exist(self) -> bool:
+        """whether the schema and table exist, or ready to do operations
+        for DB based, usually it detects whether the table shema structure is created
+
+        :return bool: whether the table and schema exists and ready
+        """
+        return self.sftp.exist(self.dir)
 
     def init_table(self):
         self.sftp.mkdir(path = os.path.join(self.ROOT_DIR, self.schema), mode = 511, ignore_existing = True)

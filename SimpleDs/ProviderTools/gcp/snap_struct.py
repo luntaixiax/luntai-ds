@@ -42,7 +42,12 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
         super().__init__(schema = schema, table = table)
         self.snap_dt_key = snap_dt_key
         
-    def is_exist(self) -> bool:
+    def exist(self) -> bool:
+        """whether the schema and table exist, or ready to do operations
+        for DB based, usually it detects whether the table shema structure is created
+
+        :return bool: whether the table and schema exists and ready
+        """
         return self.table in self._ops.list_tables(like = self.table, schema = self.schema)
 
     def init_table(self, col_schemas: DSchema, overwrite:bool = False, **settings):
@@ -52,7 +57,7 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
         :param bool overwrite: whether to drop table if exists, defaults to False
         """
 
-        if self.is_exist():
+        if self.exist():
             if overwrite:
                 self.drop()
             else:
@@ -108,6 +113,8 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
         )
         
     def count(self, snap_dt: date) -> int:
+        if not self.exist():
+            return 0
         table = self._ops.table(
             name = self.table,
             schema = self.schema
@@ -158,6 +165,8 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
         )
         
     def get_existing_snap_dts(self) -> List[date]:
+        if not self.exist():
+            return []
         existing_snaps = (
             self._ops.table(
                 name = self.table,
@@ -251,12 +260,13 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
         :param snap_dt: which snap date to delete
         :return:
         """
-        sql = f"""
-        DELETE {self.schema}.{self.table}
-        WHERE {self.snap_dt_key} = '{snap_dt}'
-        """
-        logging.info(f"Deleting table {self.schema}.{self.table} using query:\n{sql}")
-        self._ops.raw_sql(query = sql)
+        if self.exist():
+            sql = f"""
+            DELETE {self.schema}.{self.table}
+            WHERE {self.snap_dt_key} = '{snap_dt}'
+            """
+            logging.info(f"Deleting table {self.schema}.{self.table} using query:\n{sql}")
+            self._ops.raw_sql(query = sql)
         
     def drop(self):
         """drop the whole table
@@ -287,6 +297,9 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
         :param snap_dt:
         :param unit: {KB, MB, GB}
         """
+        if not self.exist():
+            return 0
+        
         tb = self._ops.table(f"{self.schema}.__TABLES__")
         # we only get total size, no partition size on date
         summs = (

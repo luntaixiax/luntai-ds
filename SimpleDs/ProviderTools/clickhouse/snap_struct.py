@@ -39,7 +39,12 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         super().__init__(schema = schema, table = table)
         self.snap_dt_key = snap_dt_key
         
-    def is_exist(self) -> bool:
+    def exist(self) -> bool:
+        """whether the schema and table exist, or ready to do operations
+        for DB based, usually it detects whether the table shema structure is created
+
+        :return bool: whether the table and schema exists and ready
+        """
         return self.table in self._ops.list_tables(like = self.table, database = self.schema)
 
     def init_table(self, col_schemas: DSchema, overwrite:bool = False, **settings):
@@ -50,7 +55,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         :param bool overwrite: whether to drop table if exists, defaults to False
         """
 
-        if self.is_exist():
+        if self.exist():
             if overwrite:
                 self.drop()
             else:
@@ -101,6 +106,8 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         )
         
     def count(self, snap_dt: date) -> int:
+        if not self.exist():
+            return 0
         table = self._ops.table(
             name = self.table,
             database = self.schema
@@ -178,6 +185,8 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         logging.info(f"Successfully ingested file {file_path} to {self.schema}.{self.table}")
         
     def get_existing_snap_dts(self) -> List[date]:
+        if not self.exist():
+            return []
         existing_snaps = (
             self._ops.table(
                 name = self.table,
@@ -271,12 +280,13 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         :param snap_dt: which snap date to delete
         :return:
         """
-        sql = f"""
-        ALTER TABLE {self.schema}.{self.table} DELETE
-        WHERE {self.snap_dt_key} = '{snap_dt}'
-        """
-        logging.info(f"Deleting table {self.schema}.{self.table} using query:\n{sql}")
-        self._ops.con.command(cmd = sql)
+        if self.exist():
+            sql = f"""
+            ALTER TABLE {self.schema}.{self.table} DELETE
+            WHERE {self.snap_dt_key} = '{snap_dt}'
+            """
+            logging.info(f"Deleting table {self.schema}.{self.table} using query:\n{sql}")
+            self._ops.con.command(cmd = sql)
         
     def drop(self):
         """drop the whole table
@@ -324,6 +334,9 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             and table = %(table)s
             and partition = %(snap_dt)s
         """
+        if not self.exist():
+            return 0
+        
         args = dict(schema = self.schema, table =self.table, snap_dt = snap_dt)
         d = self._ops.con.query(query=sql, parameters=args).first_item
 
