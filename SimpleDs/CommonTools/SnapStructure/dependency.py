@@ -3,7 +3,7 @@ from datetime import date
 import logging
 import time
 from typing import List
-
+from collections import OrderedDict
 import pandas as pd
 import pyspark
 from CommonTools.SnapStructure.structure import SnapshotDataManagerBase
@@ -58,7 +58,7 @@ class ExecPlan:
             up_infos.append(up.exec_plan())
 
         return {
-            'current': str(self),
+            'current': self,
             'upstream' : up_infos
         }
     
@@ -73,12 +73,12 @@ class ExecPlan:
         r.append(self)
         return r
     
-    def reduce_summary(self) -> dict:
+    def reduce_summary(self) -> OrderedDict:
         """combine similar steps (same obj and snap date) from serial plan and do summarize
 
         :return dict: _description_
         """
-        summary = {}
+        summary = OrderedDict()
         steps = self.get_serial_steps()
         for step in steps:
             if step.obj in summary.keys():
@@ -121,8 +121,8 @@ class SnapTableStreamGenerator:
         return cls.dm.is_valid(snap_dt = snap_dt)
 
     @classmethod
-    def run_detached(cls, snap_dt: date):
-        """run the current snap date only
+    def _execute(cls, snap_dt: date):
+        """execute the excute function defined
 
         :param date snap_dt: _description_
         """
@@ -136,13 +136,15 @@ class SnapTableStreamGenerator:
         seconds = end - start
         logging.info(f"Saved to {cls.dm}@{snap_dt}, used time {seconds // 60 : .0f} minutes {seconds % 60 : .0f} seconds")
 
+    
     @classmethod
-    def run(cls, snap_dt: date):
-        """run current and upstreams
+    def _prerun(cls, snap_dt: date):
+        """preparation before actual run
+        
 
         :param date snap_dt: _description_
+        :return _type_: _description_
         """
-        snap_dt = str2dt(snap_dt)
         if cls.dm.exist():
             if snap_dt in cls.dm.get_existing_snap_dts():
                 if cls.if_success(snap_dt):
@@ -154,6 +156,16 @@ class SnapTableStreamGenerator:
         else:
             logging.info(f"Table-Schema does not exist, will initialize")
             cls.init(snap_dt)
+    
+    @classmethod
+    def run(cls, snap_dt: date):
+        """run current and upstreams
+
+        :param date snap_dt: _description_
+        """
+        snap_dt = str2dt(snap_dt)
+        # prepare
+        cls._prerun(snap_dt)
 
         # check upstream table recursively and make up any missing files
         for up in cls.upstreams:
@@ -162,8 +174,23 @@ class SnapTableStreamGenerator:
                 logging.info(f"Run upstream {up.upstream.dm} @ {dt}")
                 up.upstream.run(dt)
 
-        # run single mode
-        cls.run_detached(snap_dt)
+        # execute
+        cls._execute(snap_dt)
+        
+    @classmethod
+    def run_detached(cls, snap_dt: date):
+        """run current timestamp only, ignore upstreams
+
+        :param date snap_dt: _description_
+        :return _type_: _description_
+        """
+        snap_dt = str2dt(snap_dt)
+        # prepare
+        cls._prerun(snap_dt)
+            
+        # execute
+        cls._execute(snap_dt)
+            
 
     @classmethod
     def get_exec_plan(cls, snap_dt: date) -> ExecPlan:
@@ -175,7 +202,7 @@ class SnapTableStreamGenerator:
         snap_dt = str2dt(snap_dt)
 
         plan = ExecPlan(
-            obj = cls.dm,
+            obj = cls,
             snap_dt = snap_dt
         )
 

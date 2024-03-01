@@ -1,14 +1,14 @@
 dacite==1.8.1
 requests==2.28.1
 sqlalchemy==1.4.45
-clickhouse-connect==0.5.14
+clickhouse-connect==0.7.0
 pymongo==4.6.2
 teradata==15.10.0.21
 teradatasql==17.20.0.0
 teradatasqlalchemy==17.0.0.3
 tqdm==4.64.1
-pandas==1.3.5
-pyarrow==9.0.0
+pandas==2.1.2 # cannot go beyond, or error with ibis
+pyarrow==15.0.0
 pyspark==3.3.4
 ortools==9.4.1874 #9.5.2237
 boto3==1.26.76
@@ -19,6 +19,7 @@ google-cloud-storage==2.14.0
 pybigquery==0.5.0
 gcsfs==2023.12.2.post1
 fsspec==2023.12.2
+ibis-framework==8.0.0
 ibis-framework[clickhouse,bigquery,duckdb,pandas,pyspark,sqlite,polars]
 openpyxl==3.1.2
 scikit-learn==1.0.2
@@ -28,8 +29,8 @@ category_encoders==2.6.2
 lightgbm==3.2.1
 optbinning==0.17.3
 scikit-optimize==0.9.0
-optuna==3.0.4
-optuna-dashboard==0.10.3
+optuna==3.5.0
+optuna-dashboard==0.14.0
 shap==0.42.1
 joblib==1.1.1
 uvicorn==0.22.0
@@ -37,4 +38,3 @@ fastapi==0.100.1
 bokeh==2.4.3
 evidently==0.4.0
 toml==0.10.2
-streamlit==1.21.0
