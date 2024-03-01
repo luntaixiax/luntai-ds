@@ -48,6 +48,8 @@ class SnapshotDataManagerBQSQL(SnapshotDataManagerBase):
 
         :return bool: whether the table and schema exists and ready
         """
+        if self.schema not in self._ops.list_schemas(like = self.schema):
+            return False
         return self.table in self._ops.list_tables(like = self.table, schema = self.schema)
 
     def init_table(self, col_schemas: DSchema, overwrite:bool = False, **settings):
