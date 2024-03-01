@@ -39,6 +39,14 @@ class SnapshotDataManagerBase:
     def __str__(self) -> str:
         return f"{self.__class__.__name__}(schema={self.schema}; table={self.table})"
     
+    def exist(self) -> bool:
+        """whether the schema and table exist, or ready to do operations
+        for DB based, usually it detects whether the table shema structure is created
+
+        :return bool: whether the table and schema exists and ready
+        """
+        raise NotImplementedError("")
+    
     def init_table(self, *args, **kws):
         """initialize schema/table
 
@@ -302,6 +310,14 @@ class SnapshotDataManagerLocalFS(SnapshotDataManagerBase):
         dir = os.path.join(self.ROOT_DIR, schema, table)
         self.dir = dir  # the root path of the table under each schema
         self.init_table()
+        
+    def exist(self) -> bool:
+        """whether the schema and table exist, or ready to do operations
+        for DB based, usually it detects whether the table shema structure is created
+
+        :return bool: whether the table and schema exists and ready
+        """
+        return os.path.exists(self.dir)
 
     def init_table(self):
         # https://note.nkmk.me/en/python-os-mkdir-makedirs/
@@ -487,6 +503,14 @@ class SnapshotDataManagerObjStorage(SnapshotDataManagerBase):
         cls.ROOT_DIR = root_dir if not root_dir.startswith("/") else root_dir[1:]
         cls.obja = obja
         cls.obja.enter_bucket(bucket_name=bucket)
+        
+    def exist(self) -> bool:
+        """whether the schema and table exist, or ready to do operations
+        for DB based, usually it detects whether the table shema structure is created
+
+        :return bool: whether the table and schema exists and ready
+        """
+        return True
     
     def __init__(self, schema:str, table:str):
         """virtual database management interface
