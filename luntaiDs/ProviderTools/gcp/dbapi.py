@@ -2,6 +2,7 @@ import logging
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 import ibis
+import pandas as pd
 from google.oauth2 import service_account
 from luntaiDs.CommonTools.dbapi import baseDbInf
 from luntaiDs.CommonTools.dtyper import DSchema
