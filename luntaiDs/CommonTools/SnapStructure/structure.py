@@ -15,6 +15,7 @@ from ibis.expr.schema import Schema
 from ibis import schema
 from luntaiDs.CommonTools.SnapStructure.tools import get_file_list_pattern, match_date_from_str
 from luntaiDs.CommonTools.dbapi import baseDbInf, dbIO
+from luntaiDs.CommonTools.dtyper import DSchema
 from luntaiDs.CommonTools.sparker import SparkConnector
 from luntaiDs.CommonTools.utils import str2dt
 from luntaiDs.CommonTools.obj_storage import ObjStorage
@@ -691,3 +692,131 @@ class SnapshotDataManagerObjStorage(SnapshotDataManagerBase):
         
         """
         return self.disk_space(snap_dt, unit = 'MB') > size_threshold
+    
+    
+        
+class SnapshotDataManagerWarehouseMixin(SnapshotDataManagerBase):
+    """Mixin class for warehouse implementation (partial)
+    """
+    def __init__(self, schema:str, table:str, snap_dt_key: str):
+        """database management interface
+
+        :param schema: schema
+        :param table:  table under each schema
+        :param snap_dt_key: snap date column name for all tables
+        """
+        super().__init__(schema = schema, table = table)
+        self.snap_dt_key = snap_dt_key
+        
+    def exist(self) -> bool:
+        """whether the schema and table exist, or ready to do operations
+        for DB based, usually it detects whether the table shema structure is created
+
+        :return bool: whether the table and schema exists and ready
+        """
+        return self.is_exist(schema=self.schema, table=self.table)
+    
+    def init_table(self, col_schemas: DSchema, overwrite:bool = False, **settings):
+        """initialize/create table in the underlying data warehouse system
+
+        :param DSchema col_schemas: data column schema
+        :param bool overwrite: whether to drop table if exists, defaults to False
+        """
+
+        if self.exist():
+            if overwrite:
+                self.drop()
+            else:
+                logging.warning(f"{self.schema}.{self.table} already exists, will do nothing." 
+                                "set overwrite to True if you wish to reset table")
+                return
+        
+        # create schema
+        self.create_schema(schema = self.schema)
+        # create table
+        self.create_table(
+            schema = self.schema,
+            table = self.table,
+            col_schemas = col_schemas,
+            **settings
+        )
+        
+    def get_schema(self) -> Schema:
+        """Check dtypes of the given schema/dataset
+
+        :return:
+        """
+        return self.get_dtypes(
+            schema = self.schema,
+            table = self.table
+        )
+        
+    def count(self, snap_dt: date) -> int:
+        if not self.exist():
+            return 0
+        table = self.get_table(
+            schema = self.schema,
+            table = self.table
+        )
+        return table.count(
+            where = (table[self.snap_dt_key] == snap_dt)
+        ).to_pandas() # convert to a scalar number
+        
+    def get_existing_snap_dts(self) -> List[date]:
+        if not self.exist():
+            return []
+        existing_snaps = (
+            self.get_table(
+                schema = self.schema,
+                table = self.table
+            ).select(self.snap_dt_key)
+            .distinct()
+            .order_by(self.snap_dt_key)
+            .to_pandas()
+        )
+        if len(existing_snaps) == 0:
+            return []
+        return list(
+            str2dt(dt.date()) 
+            for dt in pd.to_datetime(existing_snaps[self.snap_dt_key]).dt.to_pydatetime()
+        )
+            
+    def read(self, snap_dt: date, **kws) -> pd.DataFrame:
+        """Read as pandas dataframe (one snapshot date) data
+
+        :param snap_dt: snap_dt to load
+        :return:
+        """
+        table = self.get_table(
+            schema = self.schema,
+            table = self.table
+        )
+        df = table.filter(table[self.snap_dt_key] == snap_dt)
+        if 'columns' in kws:
+            df = df.select(*kws['columns'])
+        return df.to_pandas()
+    
+    def reads(self, snap_dts: List[date], **kws) -> pd.DataFrame:
+        """reads as pandas dataframe (vertically concat of several given snap dates data)
+
+        :param snap_dts: list of snap dates to read
+        :return:
+        """
+        table = self.get_table(
+            schema = self.schema,
+            table = self.table
+        )
+        df = table.filter(table[self.snap_dt_key].isin(snap_dts))
+        if 'columns' in kws:
+            df = df.select(*kws['columns'])
+        return df.to_pandas()
+
+    def drop(self):
+        """drop the whole table
+
+        :return:
+        """
+        self.delete_table(
+            schema = self.schema,
+            table = self.table,
+        )

@@ -3,120 +3,20 @@ from __future__ import annotations
 from datetime import date
 import logging
 from typing import List
-import ibis
-from ibis import Schema
 import pandas as pd
 import pyspark
 from clickhouse_connect.driver.tools import insert_file
 from luntaiDs.CommonTools.sparker import SparkConnector
-from luntaiDs.CommonTools.utils import dt2str, str2dt
-from luntaiDs.CommonTools.dtyper import DSchema
-from luntaiDs.CommonTools.SnapStructure.structure import SnapshotDataManagerBase
-from luntaiDs.ProviderTools.clickhouse.dbapi import ClickHouse
+from luntaiDs.CommonTools.SnapStructure.structure import SnapshotDataManagerWarehouseMixin
+from luntaiDs.ProviderTools.clickhouse.dbapi import ClickHouse, WarehouseHandlerCHSQL
 
-class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
+class SnapshotDataManagerCHSQL(SnapshotDataManagerWarehouseMixin, WarehouseHandlerCHSQL):
     """files are saved as clickhouse tables under each schema.table
     """
     @classmethod
     def setup(cls, db_conf: ClickHouse, spark_connector: SparkConnector = None, **settings):
         super(SnapshotDataManagerCHSQL, cls).setup(spark_connector = spark_connector)
-        cls._db_conf = db_conf
-        cls._ops = ibis.clickhouse.connect(
-            user=db_conf.username,
-            password=db_conf.password,
-            host=db_conf.ip,
-            port=db_conf.port,
-            **settings
-        )
-        
-    def __init__(self, schema:str, table:str, snap_dt_key: str):
-        """database management interface
-
-        :param schema: schema
-        :param table:  table under each schema
-        :param snap_dt_key: snap date column name for all tables
-        """
-        super().__init__(schema = schema, table = table)
-        self.snap_dt_key = snap_dt_key
-        
-    def exist(self) -> bool:
-        """whether the schema and table exist, or ready to do operations
-        for DB based, usually it detects whether the table shema structure is created
-
-        :return bool: whether the table and schema exists and ready
-        """
-        if self.schema not in self._ops.list_databases(like = self.schema):
-            return False
-        return self.table in self._ops.list_tables(like = self.table, database = self.schema)
-
-    def init_table(self, col_schemas: DSchema, overwrite:bool = False, **settings):
-        """initialize/create table in the underlying data warehouse system
-
-        :param DSchema col_schemas: data column schema
-        :param List[str] primary_keys: primary keys, defaults to None
-        :param bool overwrite: whether to drop table if exists, defaults to False
-        """
-
-        if self.exist():
-            if overwrite:
-                self.drop()
-            else:
-                logging.warning(f"{self.schema}.{self.table} already exists, will do nothing." 
-                                "set overwrite to True if you wish to reset table")
-                return
-        
-        # create schema
-        self._ops.create_database(
-            name = self.schema,
-            force = True
-        )
-        # create table
-        primary_keys = col_schemas.primary_keys
-        partition_keys = col_schemas.partition_keys
-        if self.snap_dt_key not in partition_keys:
-            partition_keys.append(self.snap_dt_key)
-        logging.info(f"Creating table {self.schema}.{self.table} using schema:\n{col_schemas.ibis_schema}")
-        logging.info(f"primary keys = {primary_keys}, partition_keys = {partition_keys}")
-        self._ops.create_table(
-            name = self.table,
-            schema = col_schemas.ibis_schema,
-            database = self.schema,
-            engine = "MergeTree",
-            order_by = primary_keys,
-            partition_by = partition_keys,
-            settings = settings
-        )
-        # add column descriptions
-        descrs = col_schemas.descrs
-        for col, descr in descrs.items():
-            try:
-                sql = f"""
-                ALTER TABLE {self.schema}.{self.table} 
-                COMMENT COLUMN IF EXISTS {col} '{descr}'"""
-                self._ops.con.command(sql)
-            except:
-                pass
-        
-    def get_schema(self) -> Schema:
-        """Check dtypes of the given schema/dataset
-
-        :return:
-        """
-        return self._ops.get_schema(
-            table_name = self.table,
-            database = self.schema
-        )
-        
-    def count(self, snap_dt: date) -> int:
-        if not self.exist():
-            return 0
-        table = self._ops.table(
-            name = self.table,
-            database = self.schema
-        )
-        return table.count(
-            where = (table[self.snap_dt_key] == snap_dt)
-        ).to_pandas() # convert to a scalar number
+        cls.connect(db_conf=db_conf, settings=settings)
         
     def save_qry(self, query: str, snap_dt: date, overwrite: bool = False):
         """save the query into the table using "insert into schema.table select ... " clause
@@ -133,7 +33,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             return
 
         # first create a view of that table which can be inspected the column dtypes and names
-        qry_cols = self._ops.sql(query).columns
+        qry_cols = self.query(query).columns
 
         # insert into the table
         # clickhouse insert need column order correct
@@ -142,7 +42,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         {query}
         """
         logging.info(f"Inserting into {self.schema}.{self.table}@{snap_dt} using query:\n{sql}")
-        self._ops.con.command(sql)
+        self.execute(sql)
 
         logging.info(f"Successfully saved to {self.schema}.{self.table}@{snap_dt}")
         
@@ -153,10 +53,10 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
         :param date snap_dt: _description_
         :raises NotImplementedError: _description_
         """
-        self._ops.insert(
-            name = self.table,
-            obj = df,
-            database = self.schema,
+        self.save_pandas(
+            df = df,
+            schema = self.schema,
+            table = self.table,
             **kws
         )
         
@@ -185,55 +85,6 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             fmt = fmt,
         )
         logging.info(f"Successfully ingested file {file_path} to {self.schema}.{self.table}")
-        
-    def get_existing_snap_dts(self) -> List[date]:
-        if not self.exist():
-            return []
-        existing_snaps = (
-            self._ops.table(
-                name = self.table,
-                database = self.schema
-            ).select(self.snap_dt_key)
-            .distinct()
-            .order_by(self.snap_dt_key)
-            .to_pandas()
-        )
-        if len(existing_snaps) == 0:
-            return []
-        return list(
-            str2dt(dt.date()) 
-            for dt in pd.to_datetime(existing_snaps[self.snap_dt_key]).dt.to_pydatetime()
-        )
-        
-    def read(self, snap_dt: date, **kws) -> pd.DataFrame:
-        """Read as pandas dataframe (one snapshot date) data
-
-        :param snap_dt: snap_dt to load
-        :return:
-        """
-        table = self._ops.table(
-            name = self.table,
-            database = self.schema
-        )
-        df = table.filter(table[self.snap_dt_key] == snap_dt)
-        if 'columns' in kws:
-            df = df.select(*kws['columns'])
-        return df.to_pandas()
-    
-    def reads(self, snap_dts: List[date], **kws) -> pd.DataFrame:
-        """reads as pandas dataframe (vertically concat of several given snap dates data)
-
-        :param snap_dts: list of snap dates to read
-        :return:
-        """
-        table = self._ops.table(
-            name = self.table,
-            database = self.schema
-        )
-        df = table.filter(table[self.snap_dt_key].isin(snap_dts))
-        if 'columns' in kws:
-            df = df.select(*kws['columns'])
-        return df.to_pandas()
     
     def load(self, snap_dt: date, **kws) -> pyspark.sql.DataFrame:
         """Read as spark dataframe (one snapshot date) data, and can also access from sc temporary view
@@ -288,18 +139,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             WHERE {self.snap_dt_key} = '{snap_dt}'
             """
             logging.info(f"Deleting table {self.schema}.{self.table} using query:\n{sql}")
-            self._ops.con.command(cmd = sql)
-        
-    def drop(self):
-        """drop the whole table
-
-        :return:
-        """
-        self._ops.drop_table(
-            name = self.table,
-            database = self.schema,
-            force = True
-        )
+            self.execute(sql = sql)
         
     def duplicate(self, dst_schema: str, dst_table: str) -> SnapshotDataManagerCHSQL:
         sql = """
@@ -311,7 +151,7 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerBase):
             src_schema = self.schema, 
             src_table = self.table
         )
-        self._ops.con.command(cmd = sql, parameters = args)
+        self.execute(sql = sql, parameters = args)
         new = SnapshotDataManagerCHSQL(
             schema = dst_schema,
             table = dst_table,
