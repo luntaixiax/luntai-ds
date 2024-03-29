@@ -6,132 +6,6 @@ import pandas as pd
 from datetime import datetime
 from luntaiDs.CommonTools.accessor import loadJSON, toJSON
 
-class ModelRegistry:
-    def __init__(self, config_js_path: str):
-        """
-
-        :param config_js_path:
-
-        js format:
-        {
-            "prod" : "MODEL_ID",
-            "archive" : {
-                "MODEL_ID_A" : {CONFIG_A},
-                "MODEL_ID_B" : {CONFIG_B},
-            }
-        }
-        """
-        self.config_js_path = config_js_path
-
-    def load_config(self) -> dict:
-        if os.path.exists(self.config_js_path):
-            config = loadJSON(self.config_js_path)
-        else:
-            config = {
-                "prod" : None,
-                "archive": {}
-            }
-        return config
-
-    def save_config(self, config:dict):
-        toJSON(config, self.config_js_path)
-
-    def get_prod_model_id(self) -> str:
-        return self.load_config().get("prod")
-
-    def get_model_list(self) -> List[str]:
-        return list(self.load_config().get("archive").keys())
-
-    def get_model_config(self, model_id: str) -> dict:
-        assert model_id in self.get_model_list(), "Model Id not found in registry, please register one first"
-        return self.load_config().get("archive").get(model_id)
-
-    def load_model(self, model_id: str):
-        config = self.get_model_config(model_id)
-        return self.load_model_by_config(config)
-
-    def load_prod(self):
-        return self.load_model(self.get_prod_model_id())
-
-    def register(self, model_id: str, *args, **kws):
-        assert model_id not in self.get_model_list(), "Model Id already registered, please try another one"
-        model_config = self.save_model_and_generate_config(model_id, *args, **kws)
-        config = self.load_config()
-        config['archive'][model_id] = model_config
-        self.save_config(config)
-
-    def remove(self, model_id: str):
-        assert model_id in self.get_model_list(), "Model Id not found"
-
-        config = self.load_config()
-        self.delete_model_files(model_id)
-        config['archive'].pop(model_id)
-        if config['prod'] == model_id:
-            config['prod'] = None
-        self.save_config(config)
-
-    def deploy(self, model_id: str):
-        # check if model id exists
-        assert model_id in self.get_model_list(), "Model Id not found in registry, please register one first"
-        config = self.load_config()
-        config["prod"] = model_id
-        self.save_config(config)
-
-    def delete_model_files(self, model_id: str):
-        raise NotImplementedError("")
-
-    def load_model_by_config(self, config: dict):
-        raise NotImplementedError("")
-
-    def save_model_and_generate_config(self, model_id:str, *args, **kws) -> dict:
-        raise NotImplementedError("")
-
-class ModelDataRegistry:
-    def __init__(self, data_root: str):
-        """
-        data_root
-        - data_id
-            - train.parquet
-            - test.parquet
-        """
-        self.data_root = data_root
-        os.makedirs(data_root, exist_ok=True)
-
-    def get_existing_ids(self):
-        return os.listdir(self.data_root)
-
-    def get_train_path(self, data_id: str):
-        return os.path.join(self.data_root, data_id, f"train_{data_id}.parquet")
-
-    def get_test_path(self, data_id: str):
-        return os.path.join(self.data_root, data_id, f"test_{data_id}.parquet")
-
-    def register(self, data_id: str, train_ds: pd.DataFrame, test_ds: pd.DataFrame, replace: bool = False):
-        existing_ids = self.get_existing_ids()
-        if not replace and data_id in existing_ids:
-            raise ValueError(f"data id {data_id} already exist, pls use another id")
-        os.makedirs(os.path.join(self.data_root, data_id), exist_ok=False)
-        train_ds.to_parquet(self.get_train_path(data_id))
-        test_ds.to_parquet(self.get_test_path(data_id))
-
-    def fetch(self, data_id: str, target_col: str = None):
-        assert data_id in self.get_existing_ids(), f"data id {data_id} does not exist"
-        train_ds = pd.read_parquet(self.get_train_path(data_id))
-        test_ds = pd.read_parquet(self.get_test_path(data_id))
-        if target_col:
-            X_train = train_ds.drop(columns=[target_col]).reset_index(drop=True)
-            X_test = test_ds.drop(columns=[target_col]).reset_index(drop=True)
-            y_train = train_ds[target_col].reset_index(drop=True)
-            y_test = test_ds[target_col].reset_index(drop=True)
-            return X_train, y_train, X_test, y_test
-        else:
-            return train_ds, test_ds
-
-    def remove(self, data_id: str):
-        dpath = os.path.join(self.data_root, data_id)
-        shutil.rmtree(dpath)
-
-
 class TimeInterval:
     def __init__(self, start: datetime, end: datetime):
         if start >= end:
@@ -189,29 +63,31 @@ class TimeInterval:
         )
 
 
-class ModelTimeTable:
+class _BaseModelTimeTable:
     """you can have different model (model_id) run in different time period as prod model
     support for multiple schedules
     """
-    def __init__(self, tb_js_path: str) -> None:
-        self.tb_js_path = tb_js_path
-
     def load_tb(self) -> Dict[str, List[TimeInterval]]:
-        tb = {}
-        if os.path.exists(self.tb_js_path):
-            c = loadJSON(self.tb_js_path)
-            for model_id, intervals in c.items():
-                tb[model_id] = [TimeInterval.from_js(interval) for interval in intervals]
-        return tb
+        """load time table
+
+        :return Dict[str, List[TimeInterval]]: time table loaded
+        """
+        raise NotImplementedError("")
     
     def save_tb(self, tb: Dict[str, List[TimeInterval]]):
-        c = {}
-        for model_id, intervals in tb.items():
-            c[model_id] = [interval.to_js() for interval in intervals]
-        toJSON(c, self.tb_js_path)
+        """save timetable
+
+        :param Dict[str, List[TimeInterval]] tb: time table
+        """
+        raise NotImplementedError("")
 
     @ classmethod
     def sort_and_merge(cls, timetable: Dict[str, List[TimeInterval]]) -> Dict[str, List[TimeInterval]]:
+        """sort and merge timetable to avoid any overlapping conflict
+
+        :param Dict[str, List[TimeInterval]] timetable: timetable to be sorted
+        :return Dict[str, List[TimeInterval]]: sorted and merged timetable
+        """
         r = {}
         for mi, tis in timetable.items():
             length = len(tis)
@@ -238,11 +114,10 @@ class ModelTimeTable:
     def register(self, model_id: str, start: datetime, end: datetime,  force: bool = False):
         """add a new time interval into the schedule
 
-        :param str model_id: _description_
-        :param datetime start: _description_
-        :param datetime end: _description_
+        :param str model_id: model id to be registered
+        :param datetime start: start datetime of this model id
+        :param datetime end: end datetime of this model id
         :param bool force: if True, will move endpoints of existing periods to avoid overlapping
-        :raises ValueError: _description_
         """
         new = TimeInterval(start=start, end=end)
         timetable = self.load_tb()
@@ -286,6 +161,11 @@ class ModelTimeTable:
         self.save_tb(timetable)
 
     def get_model_id_by_datetime(self, dt: datetime) -> str:
+        """get model id given run datetime
+
+        :param datetime dt: run datetime
+        :return str: model id in place
+        """
         timetable = self.load_tb()
         for mi, tis in timetable.items():
             for ti in tis:
@@ -293,6 +173,10 @@ class ModelTimeTable:
                     return mi
                 
     def get_schedule(self) -> pd.DataFrame:
+        """get runnning timetable
+
+        :return pd.DataFrame: timetable in pandas
+        """
         timetable = self.load_tb()
         
         r =[]
@@ -310,3 +194,31 @@ class ModelTimeTable:
 
         return df
     
+class ModelTimeTableLocalFS:
+    """you can have different model (model_id) run in different time period as prod model
+    support for multiple schedules
+    """
+    def __init__(self, tb_js_path: str) -> None:
+        self.tb_js_path = tb_js_path
+
+    def load_tb(self) -> Dict[str, List[TimeInterval]]:
+        """load time table
+
+        :return Dict[str, List[TimeInterval]]: time table loaded
+        """
+        tb = {}
+        if os.path.exists(self.tb_js_path):
+            c = loadJSON(self.tb_js_path)
+            for model_id, intervals in c.items():
+                tb[model_id] = [TimeInterval.from_js(interval) for interval in intervals]
+        return tb
+    
+    def save_tb(self, tb: Dict[str, List[TimeInterval]]):
+        """save timetable
+
+        :param Dict[str, List[TimeInterval]] tb: time table
+        """
+        c = {}
+        for model_id, intervals in tb.items():
+            c[model_id] = [interval.to_js() for interval in intervals]
+        toJSON(c, self.tb_js_path)

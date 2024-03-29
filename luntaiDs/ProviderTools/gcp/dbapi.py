@@ -84,7 +84,7 @@ class WarehouseHandlerBQSQL(BaseWarehouseHandler):
             return False
         return table in self._ops.list_tables(like = table, schema = schema)
     
-    def get_table(self, schema: str, table: str) -> ibis.table:
+    def get_table(self, schema: str, table: str) -> ibis.expr.types.Table:
         """get the ibis table
         
         :param str schema: schema/database
@@ -109,19 +109,18 @@ class WarehouseHandlerBQSQL(BaseWarehouseHandler):
         :param str table: table name
         :param DSchema col_schemas: data column schema
         :param List[str] primary_keys: primary keys, defaults to None
-        :param bool overwrite: whether to drop table if exists, defaults to False
         """
         # create table
         primary_keys = col_schemas.primary_keys
         partition_keys = col_schemas.partition_keys
         cluster_keys = col_schemas.cluster_keys
-        logging.info(f"Creating table {self.schema}.{self.table} using schema:\n{col_schemas.ibis_schema}")
+        logging.info(f"Creating table {schema}.{table} using schema:\n{col_schemas.ibis_schema}")
         logging.info(f"primary keys = {primary_keys}, partition_keys = {partition_keys}")
         # create table
         self._ops.create_table(
-            name = self.table,
+            name = table,
             schema = col_schemas.ibis_schema,
-            database = self.schema,
+            database = schema,
             overwrite = False,
             partition_by = partition_keys,
             cluster_by = cluster_keys,
@@ -132,7 +131,7 @@ class WarehouseHandlerBQSQL(BaseWarehouseHandler):
         for col, descr in descrs.items():
             try:
                 sql = f"""
-                ALTER TABLE {self.schema}.{self.table} 
+                ALTER TABLE {schema}.{table} 
                 ALTER COLUMN {col} 
                 SET OPTIONS (
                     description="{descr}"
@@ -151,7 +150,7 @@ class WarehouseHandlerBQSQL(BaseWarehouseHandler):
             schema = schema
         )
         
-    def query(self, sql: str, schema: str = None) -> ibis.table:
+    def query(self, sql: str, schema: str = None) -> ibis.expr.types.Table:
         """query using SQL
 
         :return: ibis dataframe

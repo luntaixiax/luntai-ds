@@ -18,7 +18,7 @@ class BaseWarehouseHandler:
         """
         raise NotImplementedError("")
     
-    def get_table(self, schema: str, table: str) -> ibis.table:
+    def get_table(self, schema: str, table: str) -> ibis.expr.types.Table:
         """get the ibis table
         
         :param str schema: schema/database
@@ -40,7 +40,6 @@ class BaseWarehouseHandler:
         :param str table: table name
         :param DSchema col_schemas: data column schema
         :param List[str] primary_keys: primary keys, defaults to None
-        :param bool overwrite: whether to drop table if exists, defaults to False
         """
         raise NotImplementedError("")
             
@@ -51,7 +50,7 @@ class BaseWarehouseHandler:
         """
         raise NotImplementedError("")
         
-    def query(self, sql: str, schema: str = None) -> ibis.table:
+    def query(self, sql: str, schema: str = None) -> ibis.expr.types.Table:
         """query using SQL
 
         :return: ibis dataframe
