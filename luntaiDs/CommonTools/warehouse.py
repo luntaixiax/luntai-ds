@@ -1,4 +1,5 @@
 import ibis
+import pandas as pd
 from luntaiDs.CommonTools.dbapi import baseDbInf
 from luntaiDs.CommonTools.dtyper import DSchema
 
