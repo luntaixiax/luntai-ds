@@ -5,9 +5,10 @@ from typing import List, Tuple
 import clickhouse_connect
 from clickhouse_connect.driver.tools import insert_file
 import pandas as pd
-
+import ibis
 from luntaiDs.CommonTools.dbapi import baseDbInf
-from luntaiDs.CommonTools.dtyper import Schema
+from luntaiDs.CommonTools.dtyper import DSchema
+from luntaiDs.CommonTools.warehouse import BaseWarehouseHandler
 
 class ClickHouse(baseDbInf):
     def __init__(self, driver="clickhouse+native"):
@@ -27,7 +28,147 @@ class ClickHouse(baseDbInf):
         # only used for sqlalchemy driver type
         return f"{self.driver}://{self.username}:{self.password}@{self.ip}:{self.port}"
 
+class WarehouseHandlerCHSQL(BaseWarehouseHandler):
+    @classmethod
+    def connect(cls, db_conf: ClickHouse, **settings):
+        cls._db_conf = db_conf
+        cls._ops = ibis.clickhouse.connect(
+            user=db_conf.username,
+            password=db_conf.password,
+            host=db_conf.ip,
+            port=db_conf.port,
+            **settings
+        )
+        
+    def is_exist(self, schema: str, table: str) -> bool:
+        """whether the schema and table exist, or ready to do operations
+        for DB based, usually it detects whether the table shema structure is created
+        
+        :param str schema: schema/database
+        :param str table: table name
+        :return bool: whether the table and schema exists and ready
+        """
+        if schema not in self._ops.list_databases(like = schema):
+            return False
+        return table in self._ops.list_tables(like = table, database = schema)
+    
+    def get_table(self, schema: str, table: str) -> ibis.table:
+        """get the ibis table
+        
+        :param str schema: schema/database
+        :param str table: table name
+        """
+        return self._ops.table(name = table, database = schema)
+    
+    def create_schema(self, schema: str):
+        """create database/schema
+        
+        :param str schema: schema/database
+        """
+        self._ops.create_database(
+            name = schema,
+            force = True
+        )
+        
+    def create_table(self, schema: str, table: str, col_schemas: DSchema, **settings):
+        """initialize/create table in the underlying data warehouse system
 
+        :param str schema: schema/database
+        :param str table: table name
+        :param DSchema col_schemas: data column schema
+        :param List[str] primary_keys: primary keys, defaults to None
+        :param bool overwrite: whether to drop table if exists, defaults to False
+        """
+        # by default, use merge tree engine
+        engine = settings.pop('engine', 'MergeTree')
+        # create table
+        primary_keys = col_schemas.primary_keys
+        partition_keys = col_schemas.partition_keys
+        logging.info(f"Creating table {schema}.{table} using schema:\n{col_schemas.ibis_schema}")
+        logging.info(f"primary keys = {primary_keys}, partition_keys = {partition_keys}")
+        self._ops.create_table(
+            name = table,
+            schema = col_schemas.ibis_schema,
+            database = schema,
+            engine = engine,
+            order_by = primary_keys,
+            partition_by = partition_keys,
+            settings = settings
+        )
+        # add column descriptions
+        descrs = col_schemas.descrs
+        for col, descr in descrs.items():
+            try:
+                sql = f"""
+                ALTER TABLE {schema}.{table} 
+                COMMENT COLUMN IF EXISTS {col} '{descr}'"""
+                self._ops.con.command(sql)
+            except:
+                pass
+            
+    def get_dtypes(self, schema: str, table: str) -> ibis.Schema:
+        """Check dtypes of the given schema/dataset
+
+        :return:
+        """
+        return self._ops.get_schema(
+            table_name = table,
+            database = schema
+        )
+        
+    def query(self, sql: str, schema: str = None) -> ibis.table:
+        """query using SQL
+
+        :return: ibis dataframe
+        """
+        return self._ops.sql(sql)
+    
+    def execute(self, sql: str, **kws):
+        """execute SQL for operations like insert/update/delete
+
+        :return: ibis dataframe
+        """
+        self._ops.con.command(sql, **kws)
+        
+    def save_pandas(self, df: pd.DataFrame, schema: str, table: str, **kws):
+        """The pure logic to save pandas dataframe to the system, without handling existing record problem
+
+        :param pd.DataFrame df: _description_
+        :param str schema: schema/database
+        :param str table: table name
+        """
+        self._ops.insert(
+            name = table,
+            obj = df,
+            database = schema,
+            **kws
+        )
+        
+    def delete_table(self, schema: str, table: str):
+        """drop whole table
+        
+        :param str schema: schema/database
+        :param str table: table name
+        """
+        self._ops.drop_table(
+            name = table,
+            database = schema,
+            force = True
+        )
+    
+    def truncate_table(self, schema: str, table: str):
+        """Truncate (remove) data from table
+        
+        :param str schema: schema/database
+        :param str table: table name
+        """
+        self._ops.truncate_table(
+            name = table,
+            database = schema
+        )
+        
+
+"""Below are Legacy Implementation"""
 class ClickhouseSchema:
     def __init__(self, dtype_dict: dict, default_dict: dict = None, note_dict: dict = None):
         self.dtype_dict = dtype_dict
