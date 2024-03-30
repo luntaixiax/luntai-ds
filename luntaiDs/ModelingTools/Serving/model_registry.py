@@ -1,6 +1,10 @@
 import os
+import io
+import json
+from collections import OrderedDict
 from typing import List, Dict
 from luntaiDs.CommonTools.accessor import loadJSON, toJSON
+from luntaiDs.CommonTools.obj_storage import ObjStorage
 
 class _BaseModelRegistry:
     """Base class for Simple Model Registry
@@ -52,6 +56,27 @@ class _BaseModelRegistry:
         """
         assert model_id in self.get_model_list(), "Model Id not found in registry, please register one first"
         return self.load_config().get("archive").get(model_id)
+    
+    def upsert_model_config(self, model_id: str, model_config: dict):
+        """update or insert (if not exist) model configuration
+
+        :param str model_id: model id of the model
+        :param dict model_config: the specific configuration part
+        """
+        config = self.load_config()
+        config['archive'][model_id] = model_config
+        self.save_config(config)
+        
+    def delete_model_config(self, model_id: str):
+        """delete model configuration
+
+        :param str model_id: model id of the model
+        """
+        config = self.load_config()
+        config['archive'].pop(model_id)
+        if config['prod'] == model_id:
+            config['prod'] = None
+        self.save_config(config)
 
     def load_model(self, model_id: str):
         """loading the model into memory
@@ -76,9 +101,7 @@ class _BaseModelRegistry:
         """
         assert model_id not in self.get_model_list(), "Model Id already registered, please try another one"
         model_config = self.save_model_and_generate_config(model_id, *args, **kws)
-        config = self.load_config()
-        config['archive'][model_id] = model_config
-        self.save_config(config)
+        self.upsert_model_config(model_id, model_config)
 
     def remove(self, model_id: str):
         """delete model from registry
@@ -87,12 +110,8 @@ class _BaseModelRegistry:
         """
         assert model_id in self.get_model_list(), "Model Id not found"
 
-        config = self.load_config()
         self.delete_model_files(model_id)
-        config['archive'].pop(model_id)
-        if config['prod'] == model_id:
-            config['prod'] = None
-        self.save_config(config)
+        self.delete_model_config(model_id)
 
     def deploy(self, model_id: str):
         """deploy selected model to prod, simply achieved by setting it to prod field
@@ -128,22 +147,27 @@ class _BaseModelRegistry:
         raise NotImplementedError("")
     
     
-class ModelRegistryLocalFS(_BaseModelRegistry):
+class _BaseModelRegistryLocalFS(_BaseModelRegistry):
+    """Base class for Simple Model Registry on Local Filesystem
+    Note LocalFS only means the configuration will be saved in local system, not model data
+    model versioning is achieved by tracking model_id and its configuration
+
+    configuration format:
+    {
+        "prod" : "MODEL_ID",
+        "archive" : {
+            "MODEL_ID_A" : {CONFIG_A},
+            "MODEL_ID_B" : {CONFIG_B},
+        }
+    }
+    """
     def __init__(self, config_js_path: str):
         """
-
+        
         :param config_js_path: maybe not used if not local file system
-
-        js format:
-        {
-            "prod" : "MODEL_ID",
-            "archive" : {
-                "MODEL_ID_A" : {CONFIG_A},
-                "MODEL_ID_B" : {CONFIG_B},
-            }
-        }
         """
         self.config_js_path = config_js_path
+        os.makedirs(os.path.dirname(config_js_path), exist_ok=True)
 
     def load_config(self) -> dict:
         """load configuration
@@ -165,3 +189,51 @@ class ModelRegistryLocalFS(_BaseModelRegistry):
         :param dict config: configuration in dictionary format
         """
         toJSON(config, self.config_js_path)
+        
+        
+class _BaseModelRegistryObjStorage(_BaseModelRegistry):
+    """Base class for Simple Model Registry on ObjStorage Filesystem
+    Note ObjStorage only means the configuration will be saved in ObjStorage system, not model data
+    model versioning is achieved by tracking model_id and its configuration
+
+    configuration format:
+    {
+        "prod" : "MODEL_ID",
+        "archive" : {
+            "MODEL_ID_A" : {CONFIG_A},
+            "MODEL_ID_B" : {CONFIG_B},
+        }
+    }
+    """
+    def __init__(self, objstore: ObjStorage, config_js_path: str):
+        """
+        
+        :param config_js_path: maybe not used if not local file system
+        """
+        self.config_js_path = config_js_path
+        self._objstore = objstore
+
+    def load_config(self) -> dict:
+        """load configuration
+        
+        :return dict: configuration in dictionary format
+        """
+        try:
+            return json.loads(
+                self._objstore.read_obj(self.config_js_path), 
+                object_pairs_hook = OrderedDict
+            )
+        except Exception:
+            config = {
+                "prod" : None,
+                "archive": {}
+            }
+        return config
+
+    def save_config(self, config:dict):
+        """save configuration dictionary
+
+        :param dict config: configuration in dictionary format
+        """
+        content = bytes(json.dumps(config).encode('UTF-8'))
+        self._objstore.save_obj(content, self.config_js_path)

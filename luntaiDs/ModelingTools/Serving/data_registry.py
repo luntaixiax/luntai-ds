@@ -1,7 +1,8 @@
 import os
 import shutil
-from typing import List, Dict
+from typing import List, Dict, Union
 import ibis
+import pandas as pd
 
 class _BaseModelDataRegistry:
 
@@ -12,12 +13,13 @@ class _BaseModelDataRegistry:
         """
         raise NotImplementedError("")
 
-    def register(self, data_id: str, train_ds: ibis.expr.types.Table, test_ds: ibis.expr.types.Table, replace: bool = False):
+    def register(self, data_id: str, train_ds: Union[ibis.expr.types.Table | pd.DataFrame], 
+                 test_ds: Union[ibis.expr.types.Table | pd.DataFrame], replace: bool = False):
         """register table in ibis format
 
         :param str data_id: data id
-        :param ibis.expr.types.Table train_ds: training dataset
-        :param ibis.expr.types.Table test_ds: testing dataset
+        :param Union[ibis.expr.types.Table | pd.DataFrame] train_ds: training dataset
+        :param Union[ibis.expr.types.Table | pd.DataFrame] test_ds: testing dataset
         :param bool replace: whether to replace existing dataset, defaults to False
         """
         raise NotImplementedError("")
