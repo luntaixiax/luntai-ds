@@ -1,10 +1,13 @@
 from __future__ import annotations
+from collections import OrderedDict
+import json
 import shutil
 import os
 from typing import List, Dict
 import pandas as pd
 from datetime import datetime
 from luntaiDs.CommonTools.accessor import loadJSON, toJSON
+from luntaiDs.CommonTools.obj_storage import ObjStorage
 
 class TimeInterval:
     def __init__(self, start: datetime, end: datetime):
@@ -222,3 +225,42 @@ class ModelTimeTableLocalFS:
         for model_id, intervals in tb.items():
             c[model_id] = [interval.to_js() for interval in intervals]
         toJSON(c, self.tb_js_path)
+        
+        
+class ModelTimeTableObjStorage:
+    """you can have different model (model_id) run in different time period as prod model
+    support for multiple schedules
+    """ 
+    def __init__(self, objstore: ObjStorage, tb_js_path: str):
+        """
+        
+        :param tb_js_path: maybe not used if not local file system
+        """
+        self.tb_js_path = tb_js_path
+        self._objstore = objstore
+
+    def load_tb(self) -> Dict[str, List[TimeInterval]]:
+        """load time table
+
+        :return Dict[str, List[TimeInterval]]: time table loaded
+        """
+        tb = {}
+        c = json.loads(
+            self._objstore.read_obj(self.tb_js_path), 
+            object_pairs_hook = OrderedDict
+        )
+        for model_id, intervals in c.items():
+            tb[model_id] = [TimeInterval.from_js(interval) for interval in intervals]
+        return tb
+    
+    def save_tb(self, tb: Dict[str, List[TimeInterval]]):
+        """save timetable
+
+        :param Dict[str, List[TimeInterval]] tb: time table
+        """
+        c = {}
+        for model_id, intervals in tb.items():
+            c[model_id] = [interval.to_js() for interval in intervals]
+        
+        content = bytes(json.dumps(c).encode('UTF-8'))
+        self._objstore.save_obj(content, self.tb_js_path)
