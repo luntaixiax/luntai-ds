@@ -1,7 +1,11 @@
 from typing import List, Dict
+from datetime import datetime
+import pandas as pd
 import pymongo
 from pymongo.mongo_client import MongoClient
 from luntaiDs.ModelingTools.Serving.model_registry import _BaseModelRegistry
+from luntaiDs.ModelingTools.Serving.timetable import _BaseModelTimeTable, TimeInterval
+from luntaiDs.ProviderTools.mongo.serving import MongoClient
 
 class _BaseModelRegistryMongo(_BaseModelRegistry):
     """Base class for Simple Model Registry on MongoDB
@@ -219,3 +223,75 @@ class _BaseModelRegistryMongo(_BaseModelRegistry):
             } # update content 
         )
         
+        
+
+class ModelTimeTableMongo(_BaseModelTimeTable):
+    def __init__(self, mongo_client: MongoClient, db: str, collection: str):
+        self._mongo = mongo_client
+        self._collection = self._mongo[db][collection]
+        
+    def load_tb(self) -> Dict[str, List[TimeInterval]]:
+        """load time table
+
+        :return Dict[str, List[TimeInterval]]: time table loaded
+        """
+        result = {}
+        for record in self._collection.find({}):
+            model_id = record.get('model_id')
+            ti = TimeInterval(
+                start = record.get('start'), 
+                end = record.get('end')
+            )
+            if model_id in result:
+                result[model_id].append(ti)
+            else:
+                result[model_id] = [ti]
+        return result
+                
+    
+    def save_tb(self, tb: Dict[str, List[TimeInterval]]):
+        """save timetable
+
+        :param Dict[str, List[TimeInterval]] tb: time table
+        """
+        # need to overwrite everything, so need to delete all first
+        self._collection.delete_many({})
+        
+        for model_id, intervals in tb.items():
+            for interval in intervals:
+                self._collection.insert_one(
+                    {
+                        'model_id' : model_id,
+                        'start' : interval.start,
+                        'end' : interval.end
+                    }
+                )
+                
+    def get_model_id_by_datetime(self, dt: datetime) -> str:
+        """get model id given run datetime
+
+        :param datetime dt: run datetime
+        :return str: model id in place
+        """
+        record = (
+            self._collection
+            .find_one(
+                {'start': {'$lte' : dt}, 'end' : {'$gte' : dt}}, # matching condition
+                {'_id': 0}, # drop id column
+                sort = [( '_id', pymongo.DESCENDING )] # in case multiple, find the latest record
+            )
+        )
+        if record is None:
+            return None
+        return record.get('model_id')
+    
+    def get_schedule(self) -> pd.DataFrame:
+        """get runnning timetable
+
+        :return pd.DataFrame: timetable in pandas
+        """
+        return pd.DataFrame(
+            self._collection
+            .find({}, { "_id": 0})
+            .sort('start')
+        )
