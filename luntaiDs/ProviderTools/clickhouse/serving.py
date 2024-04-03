@@ -83,7 +83,7 @@ class _BaseModelDataRegistryCH(_BaseModelDataRegistry):
                 .mutate(ibis.literal(True, 'Boolean').name(self.TRAIN_TEST_IND_COL))
             )
             test_ds = (
-                train_ds
+                test_ds
                 .mutate(ibis.literal(data_id, 'String').name(self.DATA_ID_COL))
                 .mutate(ibis.literal(False, 'Boolean').name(self.TRAIN_TEST_IND_COL))
             )
@@ -104,7 +104,7 @@ class _BaseModelDataRegistryCH(_BaseModelDataRegistry):
             {query_test}
             """
             logging.info(f"Inserting into {self.schema}.{self.table} using query:\n{sql_test}")
-            self.handler.execute(query_test)    
+            self.handler.execute(sql_test)    
             
         else:
             raise ValueError("train_ds and test_ds must be of type either pandas or ibis dataframe")

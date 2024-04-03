@@ -33,7 +33,6 @@ class SimpleSplitterIbis:
                 (_[self.shuffle_key]
                 .try_cast("string") + str(self.random_seed)) # randomness here
                 .hash()
-                .name('RAND_')
             )
             .mutate(
                 (ibis.row_number().over() 
