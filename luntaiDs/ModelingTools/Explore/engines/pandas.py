@@ -1,90 +1,80 @@
-from typing import Literal
+from typing import Literal, Tuple
 import numpy as np
-from numpy import expm1, log1p, log10
+from numpy import log10
 import pandas as pd
-from scipy.stats import rv_histogram, chi2_contingency, variation, kstest
+from scipy.stats import variation, kstest
 
-from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, serialize
-from luntaiDs.ModelingTools.Explore.profiling import DescStat, QuantileStat, StatVar, XtremeStat
+from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, _BaseNumericHelper, serialize
 from luntaiDs.ModelingTools.Explore.summary import BinaryStatAttr, BinaryStatSummary, CategStatAttr, \
-    CategStatSummary, NominalCategStatAttr, NominalCategStatSummary, NumericStatAttr, \
-        NumericStatSummary, OrdinalCategStatAttr, OrdinalCategStatSummary
+    CategStatSummary, DescStat, QuantileStat, StatVar, XtremeStat, NumericStatAttr, \
+        NumericStatSummary
 
 
+class NumericHelperPd(_BaseNumericHelper):
+    def __init__(self, vector: pd.Series):
+        self._vector = vector.astype("float")
     
+    def get_descriptive_stat(self) -> DescStat:
+        stat_descriptive = DescStat(
+            mean=serialize(self._vector.mean()),
+            var=serialize(self._vector.var()),
+            std=serialize(self._vector.std()),
+            skew=serialize(self._vector.skew()),
+            kurt=serialize(self._vector.kurtosis()),
+            mad=serialize((self._vector - self._vector.mean()).abs().mean()), # mean absolute deviation
+            cv=serialize(variation(self._vector, nan_policy="omit")),
+            normality_p=serialize(kstest(self._vector.dropna(), cdf="norm")[1]),
+        )
+        return stat_descriptive
     
-def getNumericalStat(vector) -> tuple[QuantileStat, DescStat]:
-    """Get the numerical statistics
+    def get_quantile_stat(self) -> QuantileStat:
+        stat_quantile = QuantileStat(
+            minimum=serialize(self._vector.min()),
+            perc_1th=serialize(self._vector.quantile(0.01)),
+            perc_5th=serialize(self._vector.quantile(0.05)),
+            q1=serialize(self._vector.quantile(0.25)),
+            median=serialize(self._vector.quantile(0.5)),
+            q3=serialize(self._vector.quantile(0.75)),
+            perc_95th=serialize(self._vector.quantile(0.95)),
+            perc_99th=serialize(self._vector.quantile(0.99)),
+            maximum=serialize(self._vector.max()),
+            iqr=serialize(self._vector.quantile(0.75) - self._vector.quantile(0.25)),
+            range=serialize(self._vector.max() - self._vector.min()),
+        )
+        return stat_quantile        
+        
+    
+    def get_xtreme_stat(self, xtreme_method: Literal["iqr", "quantile"] = "iqr") -> XtremeStat:
+        if xtreme_method == "iqr":
+            q1 = self._vector.quantile(0.25)
+            q3 = self._vector.quantile(0.75)
+            iqr = q3 - q1
+            lbound = q1 - 1.5 * iqr
+            rbound = q3 + 1.5 * iqr
 
-    Args:
-        vector: the underlying data
+        elif xtreme_method == "quantile":
+            lbound = self._vector.quantile(0.01)
+            rbound = self._vector.quantile(0.99)
+        else:
+            raise ValueError("xtreme_method can only be iqr or quantile")
 
-    Returns: [quantile statistics, descriptive statistics]
+        lvector = self._vector[self._vector < lbound]
+        rvector = self._vector[self._vector > rbound]
 
-    """
-    vector = vector.astype("float")
-    stat_quantile = QuantileStat(
-        minimum=serialize(vector.min()),
-        perc_1th=serialize(vector.quantile(0.01)),
-        perc_5th=serialize(vector.quantile(0.05)),
-        q1=serialize(vector.quantile(0.25)),
-        median=serialize(vector.quantile(0.5)),
-        q3=serialize(vector.quantile(0.75)),
-        perc_95th=serialize(vector.quantile(0.95)),
-        perc_99th=serialize(vector.quantile(0.99)),
-        maximum=serialize(vector.max()),
-        iqr=serialize(vector.quantile(0.75) - vector.quantile(0.25)),
-        range=serialize(vector.max() - vector.min()),
-    )
-    # descriptive statistics
-    stat_descriptive = DescStat(
-        mean=serialize(vector.mean()),
-        var=serialize(vector.var()),
-        std=serialize(vector.std()),
-        skew=serialize(vector.skew()),
-        kurt=serialize(vector.kurtosis()),
-        mad=serialize((vector - vector.mean()).abs().mean()), # mean absolute deviation
-        cv=serialize(variation(vector, nan_policy="omit")),
-        normality_p=serialize(kstest(vector.dropna(), cdf="norm")[1]),
-    )
-    return stat_quantile, stat_descriptive
+        return XtremeStat(
+            lbound=serialize(lbound),
+            rbound=serialize(rbound),
+            lxtreme_mean=serialize(lvector.mean()),
+            lxtreme_median=serialize(lvector.median()),
+            rxtreme_mean=serialize(rvector.mean()),
+            rxtreme_median=serialize(rvector.median()),
+        )
+        
+    def get_histogram(self, n_bins:int) -> Tuple[np.ndarray, np.ndarray]:
+        hist_, bin_edges_ = np.histogram(self._vector, bins=n_bins)
+        return hist_, bin_edges_
+      
 
-
-def getXtremeStat(vector, xtreme_method: Literal["iqr", "quantile"] = "iqr") -> XtremeStat:
-    """Get extreme value statistics
-
-    Args:
-        vector: the underlying data
-        xtreme_method: the extreme detection method, iqr or quantile
-
-    Returns: the extreme statistics
-
-    """
-    vector = vector.astype("float")
-    if xtreme_method == "iqr":
-        q1 = vector.quantile(0.25)
-        q3 = vector.quantile(0.75)
-        iqr = q3 - q1
-        lbound = q1 - 1.5 * iqr
-        rbound = q3 + 1.5 * iqr
-
-    elif xtreme_method == "quantile":
-        lbound = vector.quantile(0.01)
-        rbound = vector.quantile(0.99)
-    else:
-        raise ValueError("xtreme_method can only be iqr or quantile")
-
-    lvector = vector[vector < lbound]
-    rvector = vector[vector > rbound]
-
-    return XtremeStat(
-        lbound=serialize(lbound),
-        rbound=serialize(rbound),
-        lxtreme_mean=serialize(lvector.mean()),
-        lxtreme_median=serialize(lvector.median()),
-        rxtreme_mean=serialize(rvector.mean()),
-        rxtreme_median=serialize(rvector.median()),
-    )
 
 def log10pc(x):
     """Do log10p transform on both positive and negative range
@@ -226,7 +216,8 @@ class EDAEnginePandas(_BaseEDAEngine):
             
         # xtreme value
         if attr.xtreme_method_:
-            xtreme_stat_ = getXtremeStat(vector, xtreme_method=attr.xtreme_method_)
+            xst = NumericHelperPd(vector = vector)
+            xtreme_stat_ = xst.get_xtreme_stat(xtreme_method=attr.xtreme_method_)
             vector_clean = vector[
                 (vector >= xtreme_stat_.lbound) & (vector <= xtreme_stat_.rbound)
             ]
@@ -242,9 +233,12 @@ class EDAEnginePandas(_BaseEDAEngine):
         )
         
         # percentile & descriptive statistics
-        stat_quantile_, stat_descriptive_ = getNumericalStat(vector_clean)
+        xst_clean = NumericHelperPd(vector = vector_clean)
+        stat_quantile_ = xst_clean.get_quantile_stat()
+        stat_descriptive_ = xst_clean.get_descriptive_stat()
+        
         # histogram
-        hist_, bin_edges_ = np.histogram(vector_clean, bins=attr.bins_)
+        hist_, bin_edges_ = xst_clean.get_histogram(bins=attr.bins_)
         
         num_stat = NumericStatSummary(
             colname_ = colname,
@@ -270,7 +264,8 @@ class EDAEnginePandas(_BaseEDAEngine):
 
             # xtreme value
             if attr.xtreme_method_:
-                num_stat.xtreme_stat_log_ = getXtremeStat(vector_log, xtreme_method=attr.xtreme_method_)
+                xst_log = NumericHelperPd(vector = vector_log)
+                num_stat.xtreme_stat_log_ = xst_log.get_xtreme_stat(xtreme_method=attr.xtreme_method_)
                 vector_clean_log = vector_log[
                     (vector_log >= num_stat.xtreme_stat_log_.lbound)
                     & (vector_log <= num_stat.xtreme_stat_log_.rbound)
@@ -284,8 +279,11 @@ class EDAEnginePandas(_BaseEDAEngine):
                 perc=serialize(num_xtreme_log / total_)
             )
             # percentile & descriptive statistics
-            num_stat.stat_quantile_log_, num_stat.stat_descriptive_log_ = getNumericalStat(vector_clean_log)
+            xstat_clean_log = NumericHelperPd(vector = vector_clean_log)
+            
+            num_stat.stat_quantile_log_ = xstat_clean_log.get_quantile_stat()
+            num_stat.stat_descriptive_log_ = xstat_clean_log.get_descriptive_stat()
             # histogram
-            num_stat.hist_log_, num_stat.bin_edges_log_ = np.histogram(vector_clean_log, bins=attr.bins_)
+            num_stat.hist_log_, num_stat.bin_edges_log_ = xstat_clean_log.get_histogram(bins=attr.bins_)
             
         return num_stat

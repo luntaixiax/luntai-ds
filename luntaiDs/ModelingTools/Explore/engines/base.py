@@ -1,3 +1,6 @@
+from typing import Literal, Tuple
+import numpy as np
+import pandas as pd
 from luntaiDs.ModelingTools.Explore.profiling import DescStat, QuantileStat, StatVar, XtremeStat
 from luntaiDs.ModelingTools.Explore.summary import BinaryStatAttr, BinaryStatSummary, CategStatAttr, \
     CategStatSummary, NominalCategStatAttr, NominalCategStatSummary, NumericStatAttr, \
@@ -15,6 +18,20 @@ def serialize(v):
         return v.item()
     else:
         return v 
+    
+class _BaseNumericHelper:
+    
+    def get_descriptive_stat(self) -> DescStat:
+        raise NotImplementedError("")
+    
+    def get_quantile_stat(self) -> QuantileStat:
+        raise NotImplementedError("")        
+    
+    def get_xtreme_stat(self, xtreme_method: Literal["iqr", "quantile"] = "iqr") -> XtremeStat:
+        raise NotImplementedError("")
+        
+    def get_histogram(self, n_bins:int) -> Tuple[np.ndarray, np.ndarray]:
+        raise NotImplementedError("")
     
 class _BaseEDAEngine:
         

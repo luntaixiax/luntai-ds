@@ -3,261 +3,275 @@ import ibis
 from ibis import _
 import numpy as np
 import pandas as pd
-from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, serialize
-from luntaiDs.ModelingTools.Explore.profiling import DescStat, QuantileStat, StatVar, XtremeStat
-from luntaiDs.ModelingTools.Explore.summary import BinaryStatAttr, BinaryStatSummary, CategStatAttr, \
+from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, _BaseNumericHelper, serialize
+from luntaiDs.ModelingTools.Explore.summary import DescStat, QuantileStat, StatVar, XtremeStat, \
+    BinaryStatAttr, BinaryStatSummary, CategStatAttr, \
     CategStatSummary, NumericStatAttr, NumericStatSummary
         
-def getQuantiles(df: ibis.expr.types.Table, colname: str, quantiles: List[float]) -> List[float]:
-    kws = dict()
-    for q in quantiles:
-        kws[str(q)] = _[colname].quantile(q)
-    qs = df.aggregate(**kws).to_pandas()
-    return qs.iloc[0, :].astype('float').tolist()
-        
 
-def getXtremeStat(df: ibis.expr.types.Table, colname: str, 
-            xtreme_method: Literal["iqr", "quantile"] = "iqr") -> XtremeStat:
-    """Get extreme value statistics
-
-    Args:
-        vector: the underlying data
-        xtreme_method: the extreme detection method, iqr or quantile
-
-    Returns: the extreme statistics
-
-    """
-    if xtreme_method == "iqr":
-        try:
-            q1, q3 = getQuantiles(
-                df, 
-                colname=colname, 
-                quantiles=[0.25, 0.75]
+class NumericHelperIbis(_BaseNumericHelper):
+    def __init__(self, df: ibis.expr.types.Table, colname: str):
+        self._df = df
+        self._colname = colname
+    
+    def get_descriptive_stat(self) -> DescStat:
+            # get min/max
+        descrp = (
+            self._df
+            .mutate(_[self._colname].cast('Float64').name(self._colname))
+            .mutate(NORM_ = (_[self._colname] - _[self._colname].mean()))
+            .mutate(
+                NORM3_ = _['NORM_'] * _['NORM_'] * _['NORM_'],
+                NORM4_ = _['NORM_'] * _['NORM_'] * _['NORM_'] * _['NORM_'],
+                NORMABS_ = _['NORM_'].abs()
             )
-        except Exception as e:
-            # use ntile as backup
-            quantiles = (
-                df
-                .mutate(
-                    NTILE_ = ibis.ntile(4).over(
-                        order_by=_[colname]
-                    )
-                )
-                .group_by('NTILE_')
-                .aggregate(
-                    MIN_ = _[colname].min(), # 0=0%, 1=25%, 2=50%
-                    #MAX_ = _[colname].max(),
-                )
-                .to_pandas()
-                .set_index('NTILE_')
-                .astype('float')
+            .aggregate(
+                MIN_ = _[self._colname].min(),
+                MAX_ = _[self._colname].max(),
+                MEAN_ = _[self._colname].mean(),
+                VAR_ = _[self._colname].var(),
+                STD_ = _[self._colname].std(),
+                MAD_ = _['NORMABS_'].mean(),
+                NORM3_ = _['NORM3_'].mean(),
+                NORM4_ = _['NORM4_'].mean()
             )
-            q1 = quantiles.loc[1, 'MIN_']
-            q3 = quantiles.loc[3, 'MIN_']
+            .to_pandas()
+            .astype('float')
+        )
         
-        iqr = q3 - q1
-        lbound = q1 - 1.5 * iqr
-        rbound = q3 + 1.5 * iqr
-
-    elif xtreme_method == "quantile":
+        mean_ = descrp.loc[0, 'MEAN_']
+        var_ = descrp.loc[0, 'VAR_']
+        std_ = descrp.loc[0, 'STD_']
+        mad_ = descrp.loc[0, 'MAD_'] # avg(abs(X-u))
+        norm3_ = descrp.loc[0, 'NORM3_'] # avg((X-u)^3)
+        norm4_ = descrp.loc[0, 'NORM4_'] # avg((X-u)^4)
+        
+            
+        # descriptive statistics
+        stat_descriptive = DescStat(
+            mean=serialize(mean_),
+            var=serialize(var_),
+            std=serialize(std_),
+            skew=serialize(norm3_ / std_ ** 3), # TODO: whether subtract 3
+            kurt=serialize(norm4_ / std_ ** 4),
+            mad=serialize(mad_),
+            cv=serialize(std_ / mean_),
+            normality_p=None,
+        )
+        return stat_descriptive
+    
+    def getQuantiles(self, quantiles: List[float]) -> List[float]:
+        kws = dict()
+        for q in quantiles:
+            kws[str(q)] = _[self._colname].quantile(q)
+        qs = self._df.aggregate(**kws).to_pandas()
+        return qs.iloc[0, :].astype('float').tolist()
+    
+    def get_quantile_stat(self) -> QuantileStat:
+        descrp = (
+            self._df
+            .aggregate(
+                MIN_ = _[self._colname].min(),
+                MAX_ = _[self._colname].max(),
+            )
+            .to_pandas()
+            .astype('float')
+        )
+        
+        min_ = descrp.loc[0, 'MIN_']
+        max_ = descrp.loc[0, 'MAX_']
+        
+        # get quantiles
         try:
-            lbound, rbound = getQuantiles(
-                df, 
-                colname=colname, 
-                quantiles=[0.01, 0.99]
+            q001, q005, q025, q05, q075, q095, q099 = self.getQuantiles(
+                self._df, 
+                colname=self._colname, 
+                quantiles=[0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99]
             )
             
         except Exception as e:
             # use ntile as backup
             quantiles = (
-                df
+                self._df
                 .mutate(
                     NTILE_ = ibis.ntile(100).over(
-                        order_by=_[colname]
+                        order_by=_[self._colname]
                     )
                 )
                 .group_by('NTILE_')
                 .aggregate(
-                    MIN_ = _[colname].min(), # 0=0%, 1=1%, 2=2%
+                    MIN_ = _[self._colname].min(), # 0=0%, 1=1%, 2=2%
                     #MAX_ = _[colname].max(),
                 )
                 .to_pandas()
                 .set_index('NTILE_')
                 .astype('float')
             )
-            lbound = quantiles.loc[1, 'MIN_']
-            rbound = quantiles.loc[99, 'MIN_']
-    else:
-        raise ValueError("xtreme_method can only be iqr or quantile")
-
-    xtremes = df.aggregate(
-        lxtreme_mean = _[colname].mean(where = _[colname] < lbound),
-        lxtreme_median = _[colname].approx_median(where = _[colname] < lbound),
-        rxtreme_mean = _[colname].mean(where = _[colname] > rbound),
-        rxtreme_median = _[colname].approx_median(where = _[colname] > rbound)
-    ).to_pandas().astype('float')
-
-    return XtremeStat(
-        lbound=serialize(lbound),
-        rbound=serialize(rbound),
-        lxtreme_mean=serialize(xtremes.loc[0, 'lxtreme_mean']),
-        lxtreme_median=serialize(xtremes.loc[0, 'lxtreme_median']),
-        rxtreme_mean=serialize(xtremes.loc[0, 'rxtreme_mean']),
-        rxtreme_median=serialize(xtremes.loc[0, 'rxtreme_median']),
-    )
-    
-    
-def getNumericalStat(df: ibis.expr.types.Table, colname: str) -> tuple[QuantileStat, DescStat]:
-    """Get the numerical statistics
-
-    Args:
-        vector: the underlying data
-
-    Returns: [quantile statistics, descriptive statistics]
-
-    """
-    # get min/max
-    descrp = (
-        df
-        .mutate(_[colname].cast('Float64').name(colname))
-        .mutate(NORM_ = (_[colname] - _[colname].mean()))
-        .mutate(
-            NORM3_ = _['NORM_'] * _['NORM_'] * _['NORM_'],
-            NORM4_ = _['NORM_'] * _['NORM_'] * _['NORM_'] * _['NORM_'],
-            NORMABS_ = _['NORM_'].abs()
+            q001 = quantiles.loc[1, 'MIN_']
+            q005 = quantiles.loc[5, 'MIN_']
+            q025 = quantiles.loc[25, 'MIN_']
+            q05 = quantiles.loc[50, 'MIN_']
+            q075 = quantiles.loc[75, 'MIN_']
+            q095 = quantiles.loc[95, 'MIN_']
+            q099 = quantiles.loc[99, 'MIN_']
+            
+            
+        stat_quantile = QuantileStat(
+            minimum=serialize(min_),
+            perc_1th=serialize(q001),
+            perc_5th=serialize(q005),
+            q1=serialize(q025),
+            median=serialize(q05),
+            q3=serialize(q075),
+            perc_95th=serialize(q095),
+            perc_99th=serialize(q099),
+            maximum=serialize(max_),
+            iqr=serialize(q075 - q025),
+            range=serialize(max_ - min_),
         )
-        .aggregate(
-            COUNT_ = _[colname].count(),
-            MIN_ = _[colname].min(),
-            MAX_ = _[colname].max(),
-            MEAN_ = _[colname].mean(),
-            VAR_ = _[colname].var(),
-            STD_ = _[colname].std(),
-            MAD_ = _['NORMABS_'].mean(),
-            NORM3_ = _['NORM3_'].mean(),
-            NORM4_ = _['NORM4_'].mean()
-        )
-        .to_pandas()
-        .astype('float')
-    )
-    
-    min_ = descrp.loc[0, 'MIN_']
-    max_ = descrp.loc[0, 'MAX_']
-    mean_ = descrp.loc[0, 'MEAN_']
-    var_ = descrp.loc[0, 'VAR_']
-    std_ = descrp.loc[0, 'STD_']
-    n_ = descrp.loc[0, 'COUNT_']
-    mad_ = descrp.loc[0, 'MAD_'] # avg(abs(X-u))
-    norm3_ = descrp.loc[0, 'NORM3_'] # avg((X-u)^3)
-    norm4_ = descrp.loc[0, 'NORM4_'] # avg((X-u)^4)
-    
-    # get quantiles
-    try:
-        q001, q005, q025, q05, q075, q095, q099 = getQuantiles(
-            df, 
-            colname=colname, 
-            quantiles=[0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99]
-        )
+
+        return stat_quantile        
         
-    except Exception as e:
-        # use ntile as backup
-        quantiles = (
-            df
-            .mutate(
-                NTILE_ = ibis.ntile(100).over(
-                    order_by=_[colname]
+    
+    def get_xtreme_stat(self, xtreme_method: Literal["iqr", "quantile"] = "iqr") -> XtremeStat:
+        if xtreme_method == "iqr":
+            try:
+                q1, q3 = self.getQuantiles(
+                    self._df, 
+                    colname=self._colname, 
+                    quantiles=[0.25, 0.75]
+                )
+            except Exception as e:
+                # use ntile as backup
+                quantiles = (
+                    self._df
+                    .mutate(
+                        NTILE_ = ibis.ntile(4).over(
+                            order_by=_[self._colname]
+                        )
+                    )
+                    .group_by('NTILE_')
+                    .aggregate(
+                        MIN_ = _[self._colname].min(), # 0=0%, 1=25%, 2=50%
+                        #MAX_ = _[colname].max(),
+                    )
+                    .to_pandas()
+                    .set_index('NTILE_')
+                    .astype('float')
+                )
+                q1 = quantiles.loc[1, 'MIN_']
+                q3 = quantiles.loc[3, 'MIN_']
+            
+            iqr = q3 - q1
+            lbound = q1 - 1.5 * iqr
+            rbound = q3 + 1.5 * iqr
+
+        elif xtreme_method == "quantile":
+            try:
+                lbound, rbound = self.getQuantiles(
+                    self._df, 
+                    colname=self._colname, 
+                    quantiles=[0.01, 0.99]
+                )
+                
+            except Exception as e:
+                # use ntile as backup
+                quantiles = (
+                    self._df
+                    .mutate(
+                        NTILE_ = ibis.ntile(100).over(
+                            order_by=_[self._colname]
+                        )
+                    )
+                    .group_by('NTILE_')
+                    .aggregate(
+                        MIN_ = _[self._colname].min(), # 0=0%, 1=1%, 2=2%
+                        #MAX_ = _[self._colname].max(),
+                    )
+                    .to_pandas()
+                    .set_index('NTILE_')
+                    .astype('float')
+                )
+                lbound = quantiles.loc[1, 'MIN_']
+                rbound = quantiles.loc[99, 'MIN_']
+        else:
+            raise ValueError("xtreme_method can only be iqr or quantile")
+
+        xtremes = (
+            self._df
+            .aggregate(
+                lxtreme_mean = _[self._colname].mean(
+                    where = _[self._colname] < lbound
+                ),
+                lxtreme_median = _[self._colname].approx_median(
+                    where = _[self._colname] < lbound
+                ),
+                rxtreme_mean = _[self._colname].mean(
+                    where = _[self._colname] > rbound
+                ),
+                rxtreme_median = _[self._colname].approx_median(
+                    where = _[self._colname] > rbound
                 )
             )
-            .group_by('NTILE_')
-            .aggregate(
-                MIN_ = _[colname].min(), # 0=0%, 1=1%, 2=2%
-                #MAX_ = _[colname].max(),
-            )
             .to_pandas()
-            .set_index('NTILE_')
             .astype('float')
         )
-        q001 = quantiles.loc[1, 'MIN_']
-        q005 = quantiles.loc[5, 'MIN_']
-        q025 = quantiles.loc[25, 'MIN_']
-        q05 = quantiles.loc[50, 'MIN_']
-        q075 = quantiles.loc[75, 'MIN_']
-        q095 = quantiles.loc[95, 'MIN_']
-        q099 = quantiles.loc[99, 'MIN_']
-        
-        
-    stat_quantile = QuantileStat(
-        minimum=serialize(min_),
-        perc_1th=serialize(q001),
-        perc_5th=serialize(q005),
-        q1=serialize(q025),
-        median=serialize(q05),
-        q3=serialize(q075),
-        perc_95th=serialize(q095),
-        perc_99th=serialize(q099),
-        maximum=serialize(max_),
-        iqr=serialize(q075 - q025),
-        range=serialize(max_ - min_),
-    )
-    # descriptive statistics
-    stat_descriptive = DescStat(
-        mean=serialize(mean_),
-        var=serialize(var_),
-        std=serialize(std_),
-        skew=serialize(norm3_ / std_ ** 3), # TODO: whether subtract 3
-        kurt=serialize(norm4_ / std_ ** 4),
-        mad=serialize(mad_),
-        cv=serialize(std_ / mean_),
-        normality_p=None,
-    )
-    return stat_quantile, stat_descriptive
 
-def get_histogram(df: ibis.expr.types.Table, colname: str, n_bins:int) -> Tuple[np.ndarray, np.ndarray]:
-    # get bin edges
-    stat = (
-        df
-        .aggregate(
-            MIN_ = _[colname].min(),
-            MAX_ = _[colname].max()
+        return XtremeStat(
+            lbound=serialize(lbound),
+            rbound=serialize(rbound),
+            lxtreme_mean=serialize(xtremes.loc[0, 'lxtreme_mean']),
+            lxtreme_median=serialize(xtremes.loc[0, 'lxtreme_median']),
+            rxtreme_mean=serialize(xtremes.loc[0, 'rxtreme_mean']),
+            rxtreme_median=serialize(xtremes.loc[0, 'rxtreme_median']),
         )
-        .to_pandas()
-        .astype('float')
-    )
-    min_ = stat.loc[0, 'MIN_']
-    max_ = stat.loc[0, 'MAX_']
-    bin_edges_ = np.linspace(min_, max_, n_bins + 1)
-    
-    # get count of each bins
-    hist = (
-        df
-        .mutate(
-            _[colname]
-            .histogram(nbins = n_bins)
-            .name('HIST_')
+        
+    def get_histogram(self, n_bins:int) -> Tuple[np.ndarray, np.ndarray]:
+        # get bin edges
+        stat = (
+            self._df
+            .aggregate(
+                MIN_ = _[self._colname].min(),
+                MAX_ = _[self._colname].max()
+            )
+            .to_pandas()
+            .astype('float')
         )
-        .group_by('HIST_')
-        .aggregate(
-            # MIN_ = _[colname].min(),
-            # MAX_ = _[colname].max(),
-            NUM_ = _[colname].count()
+        min_ = stat.loc[0, 'MIN_']
+        max_ = stat.loc[0, 'MAX_']
+        bin_edges_ = np.linspace(min_, max_, n_bins + 1)
+        
+        # get count of each bins
+        hist = (
+            self._df
+            .mutate(
+                _[self._colname]
+                .histogram(nbins = n_bins)
+                .name('HIST_')
+            )
+            .group_by('HIST_')
+            .aggregate(
+                # MIN_ = _[self._colname].min(),
+                # MAX_ = _[self._colname].max(),
+                NUM_ = _[self._colname].count()
+            )
+            .to_pandas()
         )
-        .to_pandas()
-    )
-    # need to clip because the max value will be at edge
-    hist['HIST_'] = hist['HIST_'].clip(0, n_bins - 1)
-    
-    hist_ = (
-        hist
-        .set_index('HIST_')
-        .join(
-            pd.DataFrame(index = np.arange(n_bins)),
-            how = 'right'
+        # need to clip because the max value will be at edge
+        hist['HIST_'] = hist['HIST_'].clip(0, n_bins - 1)
+        
+        hist_ = (
+            hist
+            .set_index('HIST_')
+            .join(
+                pd.DataFrame(index = np.arange(n_bins)),
+                how = 'right'
+            )
+            .fillna(0)
+            ['NUM_'].astype('int')
+            .values
         )
-        .fillna(0)
-        ['NUM_'].astype('int')
-        .values
-    )
-    return hist_, bin_edges_
+        return hist_, bin_edges_
 
 
 class EDAEngineIbis(_BaseEDAEngine):
@@ -419,9 +433,11 @@ class EDAEngineIbis(_BaseEDAEngine):
         
         # xtreme value
         if attr.xtreme_method_:
-            xtreme_stat_ = getXtremeStat(
-                df,
-                colname = colname,
+            xstat = NumericHelperIbis(
+                df = df,
+                colname = colname
+            )
+            xtreme_stat_ = xstat.get_xtreme_stat(
                 xtreme_method=attr.xtreme_method_
             )
             df_clean = df.filter(
@@ -440,14 +456,15 @@ class EDAEngineIbis(_BaseEDAEngine):
         )
         
         # percentile & descriptive statistics
-        stat_quantile_, stat_descriptive_ = getNumericalStat(
-            df, 
+        xstat_clean = NumericHelperIbis(
+            df = df_clean,
             colname = colname
         )
+        stat_quantile_ = xstat_clean.get_quantile_stat()
+        stat_descriptive_ = xstat_clean.get_descriptive_stat()
+        
         # histogram
-        hist_, bin_edges_ = get_histogram(
-            df,
-            colname = colname,
+        hist_, bin_edges_ = xstat_clean.get_histogram(
             n_bins = attr.bins_
         )
         
@@ -468,13 +485,15 @@ class EDAEngineIbis(_BaseEDAEngine):
          
         if attr.log_scale_:
             colname_log = f"{colname}_log"
-            df_log = df.mutate(_[colname].log10().name(colname_log))
+            df_log = df_clean.mutate(_[colname].log10().name(colname_log))
             
             # xtreme value
             if attr.xtreme_method_:
-                num_stat.xtreme_stat_log_ = getXtremeStat(
-                    df_log,
-                    colname = colname_log,
+                xstat_log = NumericHelperIbis(
+                    df = df_log,
+                    colname = colname_log
+                )
+                num_stat.xtreme_stat_log_ = xstat_log.get_xtreme_stat(
                     xtreme_method=attr.xtreme_method_
                 )
                 df_clean_log = df_log.filter(
@@ -483,7 +502,7 @@ class EDAEngineIbis(_BaseEDAEngine):
                 )
                 num_xtreme_log = (n_exextreme - df_clean_log.count()).to_pandas()
             else:
-                #df_clean_log = df
+                df_clean_log = df_log
                 num_xtreme_log = 0
                 num_stat.xtreme_stat_log_ = None
             
@@ -493,14 +512,15 @@ class EDAEngineIbis(_BaseEDAEngine):
             )
             
             # percentile & descriptive statistics
-            num_stat.stat_quantile_log_, num_stat.stat_descriptive_log_ = getNumericalStat(
-                df_log, 
-                colname = colname_log
+            xstat_clean_log = NumericHelperIbis(
+                df = df_clean_log,
+                colname = colname
             )
+            num_stat.stat_quantile_log_ = xstat_clean_log.get_quantile_stat()
+            num_stat.stat_descriptive_log_ = xstat_clean_log.get_descriptive_stat()
+
             # histogram
-            num_stat.hist_log_, num_stat.bin_edges_log_ = get_histogram(
-                df_log,
-                colname = colname_log,
+            num_stat.hist_log_, num_stat.bin_edges_log_ = xstat_clean_log.get_histogram(
                 n_bins = attr.bins_
             )
             
