@@ -222,12 +222,7 @@ def numeric_preprocess_pipe(
                 standardize = False
             )
         )
-        if ns.log_scale_:
-            if ns.stat_descriptive_log_.normality_p < 0.01:
-                transformers.append(('normalize', normalizer))
-        else:
-            if ns.stat_descriptive_.normality_p < 0.01:
-                transformers.append(('normalize', normalizer))
+        transformers.append(('normalize', normalizer))
 
     if standardize_strategy is not None:
         if standardize_strategy == 'robust':
