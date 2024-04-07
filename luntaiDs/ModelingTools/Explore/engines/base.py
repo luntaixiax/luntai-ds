@@ -1,10 +1,11 @@
-from typing import Literal, Tuple
+from typing import List, Literal, Tuple, Dict
 import numpy as np
 import pandas as pd
 from luntaiDs.ModelingTools.Explore.summary import DescStat, QuantileStat, StatVar, XtremeStat, \
-    BinaryStatAttr, BinaryStatSummary, CategStatAttr, CategStatSummary, \
+    BaseStatAttr, BaseStatSummary, BaseStatObj, BinaryStatAttr, BinaryStatSummary, CategStatAttr, CategStatSummary, \
         NominalCategStatAttr, NominalCategStatSummary, NumericStatAttr, \
         NumericStatSummary, OrdinalCategStatAttr, OrdinalCategStatSummary
+from luntaiDs.ModelingTools.utils.parallel import delayer, parallel_run
 
 
 def serialize(v):
@@ -34,6 +35,12 @@ class _BaseNumericHelper:
         raise NotImplementedError("")
     
 class _BaseEDAEngine:
+    def get_columns(self) -> List[str]:
+        """get all column list from given dataset
+
+        :return List[str]: list of columns in the dataset
+        """
+        raise NotImplementedError("")
         
     def _fit_common_categ(self, colname: str, attr: CategStatAttr) -> CategStatSummary:
         """common categorical variable fitting can be reused by subclass categorical fitting
@@ -97,3 +104,34 @@ class _BaseEDAEngine:
         :return NumericStatSummary: numeric variable summary object
         """
         raise NotImplementedError("")
+    
+    @delayer
+    def _fit_one(self, col: str, attr: BaseStatAttr) -> BaseStatSummary:
+        if isinstance(attr, NumericStatAttr):
+            return self.fit_numeric(col, attr)
+        if isinstance(attr, NominalCategStatAttr):
+            return self.fit_nominal(col, attr)
+        if isinstance(attr, OrdinalCategStatAttr):
+            return self.fit_ordinal(col, attr)
+        if isinstance(attr, BinaryStatAttr):
+            return self.fit_binary(col, attr)
+        else:
+            raise TypeError("Only [NumericStatAttr/NominalCategStatAttr/OrdinalCategStatAttr/BinaryStatAttr] are supported")
+    
+    def fit(self, attrs: Dict[str, BaseStatAttr], n_jobs: int = 1) -> Dict[str, BaseStatObj]:
+        df_cols = self.get_columns()
+        used_cols = [col for col in attrs.keys() if col in df_cols]
+        jobs = (
+            self._fit_one(col, attrs.get(col)) 
+            for col in used_cols
+        )
+        summaries = parallel_run(jobs, n_jobs = n_jobs)
+        return {
+            col: BaseStatObj(
+                colname = col,
+                attr = attrs.get(col),
+                summary = summary
+            ) 
+            for col, summary 
+            in zip(used_cols, summaries)
+        }

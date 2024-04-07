@@ -277,6 +277,13 @@ class NumericHelperIbis(_BaseNumericHelper):
 class EDAEngineIbis(_BaseEDAEngine):
     def __init__(self, df: ibis.expr.types.Table):
         self._df = df
+        
+    def get_columns(self) -> List[str]:
+        """get all column list from given dataset
+
+        :return List[str]: list of columns in the dataset
+        """
+        return self._df.columns
     
     def _fit_common_categ(self, colname: str, attr: CategStatAttr) -> CategStatSummary:
         """common categorical variable fitting can be reused by subclass categorical fitting

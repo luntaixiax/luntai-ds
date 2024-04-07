@@ -1,6 +1,6 @@
-from typing import Literal, Tuple
+from typing import List, Literal, Tuple
 import numpy as np
-from numpy import log10
+from numpy import log10, exp10
 import pandas as pd
 from scipy.stats import variation, kstest
 
@@ -76,20 +76,32 @@ class NumericHelperPd(_BaseNumericHelper):
       
 
 
-def log10pc(x):
+def log10pc(x: np.ndarray) -> np.ndarray:
     """Do log10p transform on both positive and negative range
 
-    Args:
-        x: the original value
-
-    Returns: value after log10p transform
-
+    :param np.ndarray x: original array
+    :return np.ndarray: transformed array
     """
     return np.where(x > 0, log10(x + 1), -log10(1 - x))
+
+def exp10pc(x: np.ndarray) -> np.ndarray:
+    """Do exp10m transform on both positive and negative range
+
+    :param np.ndarray x: original array
+    :return np.ndarray: transformed array
+    """
+    return np.where(x > 0, exp10(x) - 1, -exp10(-x) + 1)
 
 class EDAEnginePandas(_BaseEDAEngine):
     def __init__(self, df: pd.DataFrame):
         self._df = df
+        
+    def get_columns(self) -> List[str]:
+        """get all column list from given dataset
+
+        :return List[str]: list of columns in the dataset
+        """
+        return self._df.columns.tolist()
         
     def _fit_common_categ(self, colname: str, attr: CategStatAttr) -> CategStatSummary:
         """common categorical variable fitting can be reused by subclass categorical fitting

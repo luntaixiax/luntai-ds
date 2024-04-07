@@ -1,4 +1,5 @@
-from typing import Optional, Union, Any, Dict, List, Literal
+from typing import Optional, Union, Any, Dict, List, Literal, TypeVar, MutableMapping
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 import pandas as pd
 import numpy as np
@@ -77,6 +78,7 @@ class BaseStatObj:
     
     def serialize(self) -> dict:
         return dict(
+            constructor = self.__class__.__name__
             colname = self.colname, 
             attr = self.attr.serialize(), 
             summary = self.summary.serialize()
@@ -188,7 +190,7 @@ class BinaryStatSummary(CategStatSummary):
                 name=summary.get('colname', 'NONAME')
             )
         )
-        
+          
     
 @dataclass
 class BinaryStatObj(BaseStatObj):
@@ -213,7 +215,7 @@ class OrdinalCategStatAttr(CategStatAttr):
 @dataclass
 class OrdinalCategStatSummary(CategStatSummary):
     pass
-
+    
 @dataclass
 class OrdinalCategStatObj(BaseStatObj):
     colname: str
@@ -236,44 +238,8 @@ class NominalCategStatAttr(CategStatAttr):
     max_categories_: int = 25
     
 @dataclass
-class NominalCategStatSummary(BaseStatSummary):
-    colname_: str
-    total_: int
-    missing_: StatVar
-    unique_: StatVar
-    vcounts_: pd.Series
-    vpercs_: pd.Series
-    
-    def serialize(self) -> dict:
-        return dict(
-            colname=self.colname_,
-            stats=dict(
-                total=self.total_, 
-                missing=asdict(self.missing_), 
-                unique=asdict(self.unique_)
-            ),
-            distribution=dict(
-                vcounts=self.vcounts_.to_dict(),
-                vpercs=self.vpercs_.to_dict(),
-            )
-        )
-    
-    @classmethod
-    def deserialize(cls, summary: dict):
-        return cls(
-            colname_ = summary.get('colname', 'NONAME'),
-            total_ = summary["stats"]["total"],
-            missing_ = StatVar(**summary["stats"]["missing"]),
-            unique_ = StatVar(**summary["stats"]["unique"]),
-            vcounts_ = pd.Series(
-                summary["distribution"]["vcounts"], 
-                name=summary.get('colname', 'NONAME')
-            ),
-            vpercs_ = pd.Series(
-                summary["distribution"]["vpercs"], 
-                name=summary.get('colname', 'NONAME')
-            )
-        )
+class NominalCategStatSummary(CategStatSummary):
+    pass
 
 @dataclass
 class NominalCategStatObj(BaseStatObj):
@@ -417,7 +383,7 @@ class NumericStatSummary(BaseStatSummary):
             hist_log_ = safe_toarray(summary["histogram"]["log"]["hist"]),
             bin_edges_log_ = safe_toarray(summary["histogram"]["log"]["bin_edges"])
         )
-
+   
 @dataclass
 class NumericStatObj(BaseStatObj):
     colname: str
@@ -432,4 +398,90 @@ class NumericStatObj(BaseStatObj):
             summary = NumericStatSummary.deserialize(obj.get('summary'))
         )
         
+
+'''Tabular'''
+
+class TabularStat(
+        OrderedDict, 
+        MutableMapping[str, BaseStatObj]
+    ):
+    CONSTRUCTORS = {
+        NumericStatObj.__name__: NumericStatObj,
+        NominalCategStatObj.__name__: NominalCategStatObj,
+        OrdinalCategStatObj.__name__: OrdinalCategStatObj,
+        BinaryStatObj.__name__: BinaryStatObj,
+    }
+    """Tabular stat for multiple columns"""
     
+    def serialize(self) -> dict:
+        return {
+            col: obj.serialize() for col, obj in self.items()
+        }
+    
+    @classmethod
+    def deserialize(cls, stat_dict: dict):
+        r = OrderedDict()
+        for col, obj in stat_dict.items():
+            c = cls.CONSTRUCTORS.get(obj['constructor']) # constructor
+            r[col] = c.deserialize(obj)
+        return r
+
+    def get_categ_cols(self) -> list[str]:
+        """Get categorical columns (include binary, nominal, ordinal)
+
+        :return list[str]: list of categ columns
+        """
+        return [
+            col
+            for col, obj in self.items()
+            if isinstance(obj, (BinaryStatObj, NominalCategStatObj, OrdinalCategStatObj))
+            or obj.classname in ("BinaryStatObj", "NominalCategStatObj", "OrdinalCategStatObj")
+        ]
+
+    def get_nominal_cols(self) -> list[str]:
+        """Get nominal columns
+
+        :return list[str]: list of nominal columns
+        """
+        return [
+            col
+            for col, obj in self.items()
+            if isinstance(obj, NominalCategStatObj)
+            or obj.classname == "NominalCategStatObj"
+        ]
+
+    def get_binary_cols(self) -> list[str]:
+        """Get binary columns
+
+        :return list[str]: list of binary columns
+        """
+        return [
+            col
+            for col, obj in self.items()
+            if isinstance(obj, BinaryStatObj)
+            or obj.classname == "BinaryStatObj"
+        ]
+
+    def get_ordinal_cols(self) -> list[str]:
+        """Get ordinal columns
+
+        :return list[str]: list of ordinal columns
+        """
+        return [
+            col
+            for col, obj in self.items()
+            if isinstance(obj, OrdinalCategStatObj)
+            or obj.classname == "OrdinalCategStatObj"
+        ]
+
+    def get_numeric_cols(self) -> list[str]:
+        """Get numeric columns
+
+        :return list[str]: list of numeric columns
+        """
+        return [
+            col
+            for col, obj in self.items()
+            if isinstance(obj, NumericStatObj)
+            or obj.classname == "NumericStatObj"
+        ]
