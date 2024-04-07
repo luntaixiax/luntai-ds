@@ -217,9 +217,12 @@ class EDAEnginePandas(_BaseEDAEngine):
         # xtreme value
         if attr.xtreme_method_:
             xst = NumericHelperPd(vector = vector)
-            xtreme_stat_ = xst.get_xtreme_stat(xtreme_method=attr.xtreme_method_)
+            xtreme_stat_ = xst.get_xtreme_stat(
+                xtreme_method=attr.xtreme_method_
+            )
             vector_clean = vector[
-                (vector >= xtreme_stat_.lbound) & (vector <= xtreme_stat_.rbound)
+                (vector >= xtreme_stat_.lbound) 
+                & (vector <= xtreme_stat_.rbound)
             ]
 
         else:
@@ -238,7 +241,7 @@ class EDAEnginePandas(_BaseEDAEngine):
         stat_descriptive_ = xst_clean.get_descriptive_stat()
         
         # histogram
-        hist_, bin_edges_ = xst_clean.get_histogram(bins=attr.bins_)
+        hist_, bin_edges_ = xst_clean.get_histogram(n_bins=attr.bins_)
         
         num_stat = NumericStatSummary(
             colname_ = colname,
@@ -284,6 +287,6 @@ class EDAEnginePandas(_BaseEDAEngine):
             num_stat.stat_quantile_log_ = xstat_clean_log.get_quantile_stat()
             num_stat.stat_descriptive_log_ = xstat_clean_log.get_descriptive_stat()
             # histogram
-            num_stat.hist_log_, num_stat.bin_edges_log_ = xstat_clean_log.get_histogram(bins=attr.bins_)
+            num_stat.hist_log_, num_stat.bin_edges_log_ = xstat_clean_log.get_histogram(n_bins=attr.bins_)
             
         return num_stat

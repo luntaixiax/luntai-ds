@@ -52,8 +52,8 @@ class NumericHelperIbis(_BaseNumericHelper):
             mean=serialize(mean_),
             var=serialize(var_),
             std=serialize(std_),
-            skew=serialize(norm3_ / std_ ** 3), # TODO: whether subtract 3
-            kurt=serialize(norm4_ / std_ ** 4),
+            skew=serialize(norm3_ / std_ ** 3),
+            kurt=serialize(norm4_ / std_ ** 4) - 3, # normal is 3
             mad=serialize(mad_),
             cv=serialize(std_ / mean_),
             normality_p=None,
@@ -299,8 +299,8 @@ class EDAEngineIbis(_BaseEDAEngine):
         # missing rate
         missing = basic.loc[0, 'missing_']
         missing_ = StatVar(
-            value=serialize(missing.sum()), 
-            perc=serialize(missing.mean())
+            value=serialize(missing), 
+            perc=serialize(missing / total_)
         )
         # num of unique value (dropped NA value)
         unique = basic.loc[0, 'unique_']
@@ -314,6 +314,7 @@ class EDAEngineIbis(_BaseEDAEngine):
             .dropna([colname])
             [colname]
             .value_counts()
+            .order_by(ibis.desc(f"{colname}_count"))
             .to_pandas()
         )
 
@@ -400,8 +401,8 @@ class EDAEngineIbis(_BaseEDAEngine):
         # missing rate
         missing = basic.loc[0, 'missing_']
         missing_ = StatVar(
-            value=serialize(missing.sum()), 
-            perc=serialize(missing.mean())
+            value=serialize(missing), 
+            perc=serialize(missing / total_)
         )
         # zero rate
         zeros = basic.loc[0, 'zeros_']
@@ -485,7 +486,17 @@ class EDAEngineIbis(_BaseEDAEngine):
          
         if attr.log_scale_:
             colname_log = f"{colname}_log"
-            df_log = df_clean.mutate(_[colname].log10().name(colname_log))
+            df_log = (
+                df_clean
+                .mutate(
+                    (_[colname] > 0)
+                    .ifelse(
+                        (_[colname] + 1).log10(),
+                        -(1 - _[colname]).log10()
+                    )
+                    .name(colname_log)
+                )
+            )
             
             # xtreme value
             if attr.xtreme_method_:
