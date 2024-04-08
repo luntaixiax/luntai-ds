@@ -262,6 +262,8 @@ class NumericHelperIbis(_BaseNumericHelper):
         
         hist_ = (
             hist
+            .groupby('HIST_', as_index = False)
+            .agg({'NUM_' : 'sum'}) # merge max bucket with max+1 bucket
             .set_index('HIST_')
             .join(
                 pd.DataFrame(index = np.arange(n_bins)),

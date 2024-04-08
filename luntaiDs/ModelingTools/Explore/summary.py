@@ -3,6 +3,7 @@ from collections import OrderedDict
 from dataclasses import asdict, dataclass
 import pandas as pd
 import numpy as np
+from scipy.special import exp10
 
 @dataclass
 class StatVar:
@@ -78,7 +79,7 @@ class BaseStatObj:
     
     def serialize(self) -> dict:
         return dict(
-            constructor = self.__class__.__name__
+            constructor = self.__class__.__name__,
             colname = self.colname, 
             attr = self.attr.serialize(), 
             summary = self.summary.serialize()
@@ -86,8 +87,18 @@ class BaseStatObj:
     
     @classmethod
     def deserialize(cls, obj: dict):
-        raise NotImplementedError("") 
+        raise NotImplementedError("")
+    
+    def generate(self, size: int = 100, seed: Optional[int] = None, 
+                 ignore_na: bool = False) -> pd.Series:
+        """Generate fake data based on learnt distribution
 
+        :param int size: number of samples, defaults to 100
+        :param Optional[int] seed: random seed, defaults to None
+        :param bool ignore_na: whether to ignore NA value (fill NA with values), defaults to False
+        :return pd.Series: generated pandas series
+        """
+        raise NotImplementedError("")
     
 '''CategStat'''
 
@@ -135,6 +146,40 @@ class CategStatSummary(BaseStatSummary):
             ),
         )
 
+@dataclass
+class CategStatObj(BaseStatObj):
+    colname: str
+    attr: CategStatAttr
+    summary: CategStatSummary
+    
+    def generate(self, size: int = 100, seed: Optional[int] = None, 
+                 ignore_na: bool = False
+    ) -> pd.Series:
+        """Generate fake data based on learnt distribution
+
+        :param int size: number of samples, defaults to 100
+        :param Optional[int] seed: random seed, defaults to None
+        :param bool ignore_na: whether to ignore NA value (fill NA with values), defaults to False
+        :return pd.Series: generated pandas series
+        """
+        rng = np.random.default_rng(seed=seed)  # random generator
+        choices = self.summary.vpercs_.index.tolist()
+        probs = self.summary.vpercs_.values
+
+        if not ignore_na:
+            choices.append(pd.NA)
+            probs = list(probs * (1 - self.summary.missing_.perc))
+            probs.append(self.summary.missing_.perc)
+
+        s = pd.Series(
+            rng.choice(a=choices, size=size, p=probs),
+            name=self.colname,
+        )
+        if self.attr.int_dtype_:
+            s = s.astype("float").astype("Int64")
+        return s
+
+    
     
 '''BinaryStat'''
 @dataclass
@@ -193,7 +238,7 @@ class BinaryStatSummary(CategStatSummary):
           
     
 @dataclass
-class BinaryStatObj(BaseStatObj):
+class BinaryStatObj(CategStatObj):
     colname: str
     attr: BinaryStatAttr
     summary: BinaryStatSummary
@@ -217,7 +262,7 @@ class OrdinalCategStatSummary(CategStatSummary):
     pass
     
 @dataclass
-class OrdinalCategStatObj(BaseStatObj):
+class OrdinalCategStatObj(CategStatObj):
     colname: str
     attr: OrdinalCategStatAttr
     summary: OrdinalCategStatSummary
@@ -242,7 +287,7 @@ class NominalCategStatSummary(CategStatSummary):
     pass
 
 @dataclass
-class NominalCategStatObj(BaseStatObj):
+class NominalCategStatObj(CategStatObj):
     colname: str
     attr: NominalCategStatAttr
     summary: NominalCategStatSummary
@@ -290,6 +335,22 @@ def safe_to_xst(params: Optional[dict]) -> Optional[XtremeStat]:
     if params is None:
         return
     return XtremeStat(**params)
+
+def log10pc(x: np.ndarray) -> np.ndarray:
+    """Do log10p transform on both positive and negative range
+
+    :param np.ndarray x: original array
+    :return np.ndarray: transformed array
+    """
+    return np.where(x > 0, np.log10(x + 1), -np.log10(1 - x))
+
+def exp10pc(x: np.ndarray) -> np.ndarray:
+    """Do exp10m transform on both positive and negative range
+
+    :param np.ndarray x: original array
+    :return np.ndarray: transformed array
+    """
+    return np.where(x > 0, exp10(x) - 1, -exp10(-x) + 1)
     
 
 @dataclass
@@ -397,6 +458,65 @@ class NumericStatObj(BaseStatObj):
             attr = NumericStatAttr.deserialize(obj.get('attr')),
             summary = NumericStatSummary.deserialize(obj.get('summary'))
         )
+    
+    def generate(self, size: int = 100, seed: Optional[int] = None, 
+                 ignore_na: bool = False) -> pd.Series:
+        """Generate fake data based on learnt distribution
+
+        :param int size: number of samples, defaults to 100
+        :param Optional[int] seed: random seed, defaults to None
+        :param bool ignore_na: whether to ignore NA value (fill NA with values), defaults to False
+        :return pd.Series: generated pandas series
+        """
+        from scipy.stats import rv_histogram
+        
+        if ignore_na:
+            na_num = 0  # number of na values
+            valid_num = size
+            na_vs = []
+        else:
+            na_num = int(size * self.summary.missing_.perc)  # number of na values
+            valid_num = size - na_num
+            na_vs = [pd.NA] * na_num
+
+        # size of zeros
+        if self.attr.setaside_zero_:
+            zero_num = int(valid_num * self.summary.zeros_.perc)  # number of zeros
+        else:
+            zero_num = 0
+        zero_vs = np.zeros(shape=zero_num)
+        # size of infs
+        inf_num = int(valid_num * self.summary.infs_pos_.perc)  # number of +inf
+        neg_inf_num = int(valid_num * self.summary.infs_neg_.perc)  # number of -inf
+        inf_vs = [np.inf] * inf_num
+        neg_inf_vs = [-np.inf] * neg_inf_num
+
+        # remaining valid nums
+        valid_num = valid_num - zero_num - inf_num - neg_inf_num
+
+        # valid numerical values
+        if self.attr.log_scale_:
+            hist_dist = rv_histogram(
+                histogram=(self.summary.hist_log_, self.summary.bin_edges_log_), 
+                seed=seed
+            )
+            valid_vs = exp10pc(hist_dist.rvs(size=valid_num, random_state = seed))
+        else:
+            hist_dist = rv_histogram(
+                histogram=(self.summary.hist_, self.summary.bin_edges_), 
+                seed=seed
+            )
+            valid_vs = hist_dist.rvs(size=valid_num, random_state = seed)
+
+        values = np.concatenate((valid_vs, inf_vs, neg_inf_vs, zero_vs, na_vs))
+        np.random.seed(seed)
+        np.random.shuffle(values)
+        np.random.seed(None) # reset
+
+        return pd.Series(
+            values,
+            name=self.colname,
+        ).astype(dtype="Float64")
         
 
 '''Tabular'''
@@ -435,7 +555,7 @@ class TabularStat(
             col
             for col, obj in self.items()
             if isinstance(obj, (BinaryStatObj, NominalCategStatObj, OrdinalCategStatObj))
-            or obj.classname in ("BinaryStatObj", "NominalCategStatObj", "OrdinalCategStatObj")
+            or obj.__class__.__name__ in ("BinaryStatObj", "NominalCategStatObj", "OrdinalCategStatObj")
         ]
 
     def get_nominal_cols(self) -> list[str]:
@@ -447,7 +567,7 @@ class TabularStat(
             col
             for col, obj in self.items()
             if isinstance(obj, NominalCategStatObj)
-            or obj.classname == "NominalCategStatObj"
+            or obj.__class__.__name__ == "NominalCategStatObj"
         ]
 
     def get_binary_cols(self) -> list[str]:
@@ -459,7 +579,7 @@ class TabularStat(
             col
             for col, obj in self.items()
             if isinstance(obj, BinaryStatObj)
-            or obj.classname == "BinaryStatObj"
+            or obj.__class__.__name__ == "BinaryStatObj"
         ]
 
     def get_ordinal_cols(self) -> list[str]:
@@ -471,7 +591,7 @@ class TabularStat(
             col
             for col, obj in self.items()
             if isinstance(obj, OrdinalCategStatObj)
-            or obj.classname == "OrdinalCategStatObj"
+            or obj.__class__.__name__ == "OrdinalCategStatObj"
         ]
 
     def get_numeric_cols(self) -> list[str]:
@@ -483,5 +603,27 @@ class TabularStat(
             col
             for col, obj in self.items()
             if isinstance(obj, NumericStatObj)
-            or obj.classname == "NumericStatObj"
+            or obj.__class__.__name__ == "NumericStatObj"
         ]
+        
+    def generate(self, size: int = 100, seed: Optional[int] = None, 
+                 ignore_na: bool = False
+    ) -> pd.DataFrame:
+        """Generate fake data based on learnt distribution
+
+        :param int size: number of samples, defaults to 100
+        :param Optional[int] seed: random seed, defaults to None
+        :param bool ignore_na: whether to ignore NA value (fill NA with values), defaults to False
+        :return pd.DataFrame: generated fake data
+        """
+        return pd.concat(
+            [
+                obj.generate(
+                    size=size, 
+                    seed=seed, 
+                    ignore_na=ignore_na
+                )
+                for col, obj in self.items()
+            ],
+            axis=1,
+        )

@@ -1,10 +1,11 @@
 from typing import List, Literal, Tuple, Dict
 import numpy as np
 import pandas as pd
-from luntaiDs.ModelingTools.Explore.summary import DescStat, QuantileStat, StatVar, XtremeStat, \
+from luntaiDs.ModelingTools.Explore.summary import DescStat, QuantileStat, StatVar, TabularStat, XtremeStat, \
     BaseStatAttr, BaseStatSummary, BaseStatObj, BinaryStatAttr, BinaryStatSummary, CategStatAttr, CategStatSummary, \
         NominalCategStatAttr, NominalCategStatSummary, NumericStatAttr, \
-        NumericStatSummary, OrdinalCategStatAttr, OrdinalCategStatSummary
+        NumericStatSummary, OrdinalCategStatAttr, OrdinalCategStatSummary, \
+        BinaryStatObj, OrdinalCategStatObj, NominalCategStatObj, NumericStatObj
 from luntaiDs.ModelingTools.utils.parallel import delayer, parallel_run
 
 
@@ -59,6 +60,19 @@ class _BaseEDAEngine:
         :return BinaryStatSummary: binary variable summary object
         """
         raise NotImplementedError("")
+    
+    def fit_binary_obj(self, colname: str, attr: BinaryStatAttr) -> BinaryStatObj:
+        """binary categorical variable fitting
+
+        :param str colname: column name
+        :param BinaryStatAttr attr: binary variable attribute object
+        :return BinaryStatObj: binary variable result object (attr + summary)
+        """
+        return BinaryStatObj(
+            colname = colname,
+            attr = attr,
+            summary = self.fit_binary(colname, attr)
+        )
         
     def fit_ordinal(self, colname: str, attr: OrdinalCategStatAttr) -> OrdinalCategStatSummary:
         """ordinal categorical variable fitting
@@ -76,6 +90,19 @@ class _BaseEDAEngine:
             unique_ = common_stat_summary.unique_,
             vcounts_ = common_stat_summary.vcounts_,
             vpercs_ = common_stat_summary.vpercs_,
+        )
+        
+    def fit_ordinal_obj(self, colname: str, attr: OrdinalCategStatAttr) -> OrdinalCategStatObj:
+        """ordinal categorical variable fitting
+
+        :param str colname: column name
+        :param OrdinalCategStatAttr attr: ordinal variable attribute object
+        :return OrdinalCategStatObj: ordinal variable result object (attr + summary)
+        """
+        return OrdinalCategStatObj(
+            colname = colname,
+            attr = attr,
+            summary = self.fit_ordinal(colname, attr)
         )
         
     def fit_nominal(self, colname: str, attr: NominalCategStatAttr) -> NominalCategStatSummary:
@@ -96,6 +123,19 @@ class _BaseEDAEngine:
             vpercs_ = common_stat_summary.vpercs_,
         )
         
+    def fit_nominal_obj(self, colname: str, attr: NominalCategStatAttr) -> NominalCategStatObj:
+        """nominal categorical variable fitting
+
+        :param str colname: column name
+        :param NominalCategStatAttr attr: nominal variable attribute object
+        :return NominalCategStatObj: nominal variable result object (attr + summary)
+        """
+        return NominalCategStatObj(
+            colname = colname,
+            attr = attr,
+            summary = self.fit_nominal(colname, attr)
+        )
+        
     def fit_numeric(self, colname: str, attr: NumericStatAttr) -> NumericStatSummary:
         """numeric variable fitting
 
@@ -105,20 +145,34 @@ class _BaseEDAEngine:
         """
         raise NotImplementedError("")
     
+    def fit_numeric_obj(self, colname: str, attr: NumericStatAttr) -> NumericStatObj:
+        """numeric variable fitting
+
+        :param str colname: _description_
+        :param NumericStatAttr attr: numeric variable attribute object
+        :return NumericStatObj: numeric variable result object (attr + summary)
+        """
+        return NumericStatObj(
+            colname = colname,
+            attr = attr,
+            summary = self.fit_numeric(colname, attr)
+        )
+        
+    
     @delayer
-    def _fit_one(self, col: str, attr: BaseStatAttr) -> BaseStatSummary:
+    def _fit_one(self, col: str, attr: BaseStatAttr) -> BaseStatObj:
         if isinstance(attr, NumericStatAttr):
-            return self.fit_numeric(col, attr)
+            return self.fit_numeric_obj(col, attr)
         if isinstance(attr, NominalCategStatAttr):
-            return self.fit_nominal(col, attr)
+            return self.fit_nominal_obj(col, attr)
         if isinstance(attr, OrdinalCategStatAttr):
-            return self.fit_ordinal(col, attr)
+            return self.fit_ordinal_obj(col, attr)
         if isinstance(attr, BinaryStatAttr):
-            return self.fit_binary(col, attr)
+            return self.fit_binary_obj(col, attr)
         else:
             raise TypeError("Only [NumericStatAttr/NominalCategStatAttr/OrdinalCategStatAttr/BinaryStatAttr] are supported")
     
-    def fit(self, attrs: Dict[str, BaseStatAttr], n_jobs: int = 1) -> Dict[str, BaseStatObj]:
+    def fit(self, attrs: Dict[str, BaseStatAttr], n_jobs: int = 1) -> TabularStat:
         df_cols = self.get_columns()
         used_cols = [col for col in attrs.keys() if col in df_cols]
         jobs = (
@@ -126,12 +180,4 @@ class _BaseEDAEngine:
             for col in used_cols
         )
         summaries = parallel_run(jobs, n_jobs = n_jobs)
-        return {
-            col: BaseStatObj(
-                colname = col,
-                attr = attrs.get(col),
-                summary = summary
-            ) 
-            for col, summary 
-            in zip(used_cols, summaries)
-        }
+        return TabularStat(zip(used_cols, summaries))

@@ -12,11 +12,9 @@ from sklearn.compose import ColumnTransformer
 from category_encoders.ordinal import OrdinalEncoder
 from category_encoders.count import CountEncoder
 from category_encoders.woe import WOEEncoder # bug
-# from luntaiDs.ModelingTools.Explore.profiling import NominalCategStat, BinaryStat, OrdinalCategStat, NumericStat, TabularStat, \
-#     exp10pc, log10pc
 from luntaiDs.ModelingTools.Explore.summary import BaseStatObj, BinaryStatObj, NominalCategStatObj, \
-    NumericStatObj, OrdinalCategStatAttr, OrdinalCategStatObj, OrdinalCategStatSummary, TabularStat
-from luntaiDs.ModelingTools.Explore.engines.pandas import exp10pc, log10pc
+    NumericStatObj, OrdinalCategStatAttr, OrdinalCategStatObj, OrdinalCategStatSummary, TabularStat, \
+    exp10pc, log10pc
 from luntaiDs.ModelingTools.FeatureEngineer.transformers import BucketCategValue, BucketCategByFsel, NamedTransformer, \
     MyImputer, BinaryConverter, OutlierClipper
 from luntaiDs.ModelingTools.utils.support import make_present_col_selector
@@ -119,9 +117,9 @@ class OrdinalCategPreproc(BasePreproc):
 
 @dataclass
 class NominalCategStatPreproc(BasePreproc):
-    impute_value: Optional[str] = None
-    bucket_strategy: Literal['freq', 'correlation'] = 'freq'
-    encode_strategy: Optional[Literal['ohe', 'ce', 'woe']] = None
+    impute_value: Optional[str] = 'Other'
+    bucket_strategy: Literal['freq', 'correlation'] = None
+    encode_strategy: Optional[Literal['ohe', 'ce', 'woe']] = 'woe'
     
     def compile_sklearn_pipeline(self, param: NominalCategStatObj) -> Pipeline:
         transformers = []
@@ -202,7 +200,7 @@ class NominalCategStatPreproc(BasePreproc):
 class NumericPreproc(BasePreproc):
     impute: bool = True
     normalize:bool = False
-    standardize_strategy: Optional[Literal['robust', 'standard', 'maxabs']] = None
+    standardize_strategy: Optional[Literal['robust', 'standard', 'maxabs']] = 'robust'
     
     def compile_sklearn_pipeline(self, param: NumericStatObj) -> Pipeline:
         transformers = []
@@ -323,7 +321,7 @@ def get_mutual_info_preprocess(ts: TabularStat) -> BaseEstimator:
                 colname = col,
                 attr = OrdinalCategStatAttr(
                     categories_ = stat.summary.vcounts_.index.tolist(),
-                    int_dtype = stat.attr.int_dtype_
+                    int_dtype_ = stat.attr.int_dtype_
                 ),
                 summary = OrdinalCategStatSummary(
                     colname_ = col,

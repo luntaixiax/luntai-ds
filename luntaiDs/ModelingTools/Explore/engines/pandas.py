@@ -1,13 +1,12 @@
 from typing import List, Literal, Tuple
 import numpy as np
-from numpy import log10, exp10
 import pandas as pd
 from scipy.stats import variation, kstest
 
 from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, _BaseNumericHelper, serialize
 from luntaiDs.ModelingTools.Explore.summary import BinaryStatAttr, BinaryStatSummary, CategStatAttr, \
     CategStatSummary, DescStat, QuantileStat, StatVar, XtremeStat, NumericStatAttr, \
-        NumericStatSummary
+        NumericStatSummary, exp10pc, log10pc
 
 
 class NumericHelperPd(_BaseNumericHelper):
@@ -73,24 +72,6 @@ class NumericHelperPd(_BaseNumericHelper):
     def get_histogram(self, n_bins:int) -> Tuple[np.ndarray, np.ndarray]:
         hist_, bin_edges_ = np.histogram(self._vector, bins=n_bins)
         return hist_, bin_edges_
-      
-
-
-def log10pc(x: np.ndarray) -> np.ndarray:
-    """Do log10p transform on both positive and negative range
-
-    :param np.ndarray x: original array
-    :return np.ndarray: transformed array
-    """
-    return np.where(x > 0, log10(x + 1), -log10(1 - x))
-
-def exp10pc(x: np.ndarray) -> np.ndarray:
-    """Do exp10m transform on both positive and negative range
-
-    :param np.ndarray x: original array
-    :return np.ndarray: transformed array
-    """
-    return np.where(x > 0, exp10(x) - 1, -exp10(-x) + 1)
 
 class EDAEnginePandas(_BaseEDAEngine):
     def __init__(self, df: pd.DataFrame):
