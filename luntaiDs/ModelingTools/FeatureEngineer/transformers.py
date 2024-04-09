@@ -493,7 +493,11 @@ class BucketCategByFsel(BaseEstimator, TransformerMixin):
         self.fsels = {}
         for c in self.cols:
             x = X[[c]]
-            ohe = OneHotEncoder(drop=None, sparse=self.accept_sparse, handle_unknown='ignore')
+            ohe = OneHotEncoder(
+                drop=None, 
+                sparse=self.accept_sparse, 
+                handle_unknown='ignore'
+            )
             x_ohe = ohe.fit_transform(x, y)
             if not self.accept_sparse:
                 x_ohe = pd.DataFrame(x_ohe, columns=ohe.categories_[0])
@@ -1045,7 +1049,12 @@ class OnehotEncHelper(TransformerHelper):
     def build(self) -> NamedTransformer:
         if self.encs is None:
             # if encs is None, will apply default parameter, the `features` will specify which features to apply to
-            return NamedTransformer(OneHotEncoder(categories='auto', handle_unknown='error', sparse=False, drop=None))
+            return NamedTransformer(OneHotEncoder(
+                categories='auto', 
+                handle_unknown='error', 
+                sparse=False, 
+                drop=None
+            ))
 
         elif isinstance(self.encs, (tuple, list)):
             categories, drop, handle_unknown = self.encs
