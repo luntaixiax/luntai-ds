@@ -5,7 +5,8 @@ from luntaiDs.ModelingTools.Explore.summary import DescStat, QuantileStat, StatV
     BaseStatAttr, BaseStatSummary, BaseStatObj, BinaryStatAttr, BinaryStatSummary, CategStatAttr, CategStatSummary, \
         NominalCategStatAttr, NominalCategStatSummary, NumericStatAttr, \
         NumericStatSummary, OrdinalCategStatAttr, OrdinalCategStatSummary, \
-        BinaryStatObj, OrdinalCategStatObj, NominalCategStatObj, NumericStatObj
+        BinaryStatObj, OrdinalCategStatObj, NominalCategStatObj, NumericStatObj,\
+        CategUniVarClfTargetCorr, NumericUniVarClfTargetCorr
 from luntaiDs.ModelingTools.utils.parallel import delayer, parallel_run
 
 
@@ -173,6 +174,12 @@ class _BaseEDAEngine:
             raise TypeError("Only [NumericStatAttr/NominalCategStatAttr/OrdinalCategStatAttr/BinaryStatAttr] are supported")
     
     def fit(self, attrs: Dict[str, BaseStatAttr], n_jobs: int = 1) -> TabularStat:
+        """fit a tabular dataset
+
+        :param Dict[str, BaseStatAttr] attrs: dictionary of col:attribute pairs
+        :param int n_jobs: control parallelism, defaults to 1
+        :return TabularStat: tabular stat object
+        """
         df_cols = self.get_columns()
         used_cols = [col for col in attrs.keys() if col in df_cols]
         jobs = (
@@ -181,3 +188,22 @@ class _BaseEDAEngine:
         )
         summaries = parallel_run(jobs, n_jobs = n_jobs)
         return TabularStat(zip(used_cols, summaries))
+    
+
+    def fit_univarclf_categ(self, x_col: str, y_col: str) -> CategUniVarClfTargetCorr:
+        """fit univariate correlation for classififer target and categorical variable
+
+        :param str x_col: column of a categorical variable
+        :param str y_col: column of the classifier target varaible
+        :return CategUniVarClfTargetCorr: result object
+        """
+        raise NotImplementedError("")
+    
+    def fit_univarclf_numeric(self, x_col: str, y_col: str) -> NumericUniVarClfTargetCorr:
+        """fit univariate correlation for classififer target and numeric variable
+
+        :param str x_col: column of a numeric variable
+        :param str y_col: column of the classifier target varaible
+        :return NumericUniVarClfTargetCorr: result object
+        """
+        raise NotImplementedError("")

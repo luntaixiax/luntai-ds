@@ -1,11 +1,12 @@
 from typing import List, Literal, Tuple
 import numpy as np
+from optbinning import MulticlassOptimalBinning
 import pandas as pd
 from scipy.stats import variation, kstest
-
-from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, _BaseNumericHelper, serialize
+from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, _BaseNumericHelper, serialize, \
+    _BaseUniVarClfEngine
 from luntaiDs.ModelingTools.Explore.summary import BinaryStatAttr, BinaryStatSummary, CategStatAttr, \
-    CategStatSummary, DescStat, QuantileStat, StatVar, XtremeStat, NumericStatAttr, \
+    CategStatSummary, CategUniVarClfTargetCorr, DescStat, NumericUniVarClfTargetCorr, QuantileStat, StatVar, XtremeStat, NumericStatAttr, \
         NumericStatSummary, exp10pc, log10pc
 
 
@@ -72,6 +73,23 @@ class NumericHelperPd(_BaseNumericHelper):
     def get_histogram(self, n_bins:int) -> Tuple[np.ndarray, np.ndarray]:
         hist_, bin_edges_ = np.histogram(self._vector, bins=n_bins)
         return hist_, bin_edges_
+
+def _combine_x_y(x: pd.Series, y: pd.Series, 
+        combine_x_categ:bool = False) -> pd.DataFrame:
+    df = pd.DataFrame({'x' : x.values, 'y' : y.values})
+    df = df.dropna(
+        subset = ['y'], 
+        axis = 0, 
+        how = 'any'
+    )
+    # categorical variable for x only:
+    if combine_x_categ:
+        vc = df['x'].value_counts(normalize = True)
+        others = vc.iloc[20:].index  # only keep top 20 categories
+        df.loc[df['x'].isin(others), 'x'] = 'Others'
+    
+    return df
+
 
 class EDAEnginePandas(_BaseEDAEngine):
     def __init__(self, df: pd.DataFrame):
@@ -283,3 +301,141 @@ class EDAEnginePandas(_BaseEDAEngine):
             num_stat.hist_log_, num_stat.bin_edges_log_ = xstat_clean_log.get_histogram(n_bins=attr.bins_)
             
         return num_stat
+    
+    def fit_univarclf_categ(self, x_col: str, y_col: str) -> CategUniVarClfTargetCorr:
+        """fit univariate correlation for classififer target and categorical variable
+
+        :param str x_col: column of a categorical variable
+        :param str y_col: column of the classifier target varaible
+        :return CategUniVarClfTargetCorr: result object
+        """
+        
+        df = _combine_x_y(
+            self._df[x_col].astype('str').fillna('Missing_'), # need to fill as separate categ
+            self._df[y_col].astype('str'), 
+            combine_x_categ = True # combine x's categories to be less than 20
+        )
+        
+        # categorical:  p(x | y)
+        p_x_y_ = {}
+        for y in df['y'].unique():
+            cs = (
+                df
+                .loc[df['y'] == y, ['x']]
+                .groupby('x')
+                .size()
+            )
+            d = pd.DataFrame({
+                    'count' : cs.values, 
+                    'perc' : cs  / cs.sum()
+                }, 
+                index = cs.index
+            )
+            p_x_y_[y] = d.fillna(0) #.to_dict(orient = 'index')
+            
+        # categorical:  p(y | x)  prob (event rate when binary clf) by category
+        p_y_x_ = {}
+        for x in df['x'].unique():
+            cs = (
+                df
+                .loc[df['x'] == x, ['y']]
+                .groupby('y')
+                .size()
+            )
+            d = pd.DataFrame({
+                    'count' : cs.values, 
+                    'perc' : cs  / cs.sum()
+                }, 
+                index = cs.index
+            )
+            p_y_x_[x] = d.fillna(0) #.to_dict(orient = 'index')
+            
+        return CategUniVarClfTargetCorr(
+            colname_ = x_col,
+            yname_ = y_col,
+            ylabels_ = (
+                self._df[y_col]
+                .dropna()
+                .unique()
+                .astype('str')
+                .tolist()
+            ),
+            p_x_y_ = p_x_y_,
+            p_y_x_ = p_y_x_
+        )
+    
+    def fit_univarclf_numeric(self, x_col: str, y_col: str) -> NumericUniVarClfTargetCorr:
+        """fit univariate correlation for classififer target and numeric variable
+
+        :param str x_col: column of a numeric variable
+        :param str y_col: column of the classifier target varaible
+        :return NumericUniVarClfTargetCorr: result object
+        """
+        df = _combine_x_y(
+            self._df[x_col].astype('float'), 
+            self._df[y_col].astype('str'), 
+        )
+        
+        # numerical:  p(x | y)  distribution by target (boxplot)
+        t = {'origin' : {}, 'log' : {}}
+        for y in df['y'].unique():
+            # EDA on given subset
+            eda = EDAEnginePandas(df[df['y'] == y])
+            summary = eda.fit_numeric(
+                colname = 'x', # already renamed
+                attr = NumericStatAttr(
+                    setaside_zero_ = False, 
+                    log_scale_ = True, 
+                    xtreme_method_ = 'iqr', 
+                    bins_ = 100
+                )
+            )
+            
+            t['origin'][y] = {
+                'lbound': summary.xtreme_stat_.lbound,
+                'q1' : summary.stat_quantile_.q1,
+                'mean' : summary.stat_descriptive_.mean,
+                'median' : summary.stat_quantile_.median,
+                'q3' : summary.stat_quantile_.q3,
+                'rbound': summary.xtreme_stat_.rbound,
+            }
+            t['log'][y] = {
+                'lbound': summary.xtreme_stat_log_.lbound,
+                'q1' : summary.stat_quantile_log_.q1,
+                'mean' : summary.stat_descriptive_log_.mean,
+                'median' : summary.stat_quantile_log_.median,
+                'q3' : summary.stat_quantile_log_.q3,
+                'rbound': summary.xtreme_stat_log_.rbound,
+            }
+            
+        p_x_y_ = {
+            'origin' : pd.DataFrame.from_dict(t['origin'], orient='index'),
+            'log' : pd.DataFrame.from_dict(t['log'], orient='index')
+        }
+            
+            
+        # numerical:  p(y | x)  prob (event rate if binary clf) by bucketized x
+        mob = MulticlassOptimalBinning(
+            prebinning_method = 'quantile',
+            monotonic_trend = 'auto',
+            max_n_prebins = 20,
+            min_prebin_size = 0.05,
+        )
+        mob.fit(x = df['x'], y = df['y'])
+        p_y_x_ = mob.binning_table.build(add_totals=False)
+        
+        return NumericUniVarClfTargetCorr(
+            colname_ = x_col,
+            yname_ = y_col,
+            ylabels_ = (
+                self._df[y_col]
+                .dropna()
+                .unique()
+                .astype('str')
+                .tolist()
+            ),
+            p_x_y_ = p_x_y_,
+            p_y_x_ = p_y_x_
+        )
+
+    

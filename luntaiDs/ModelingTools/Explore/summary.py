@@ -627,3 +627,86 @@ class TabularStat(
             ],
             axis=1,
         )
+        
+
+'''Univaraite Corr'''
+
+@dataclass
+class BaseUniVarClfTargetCorr:
+    colname_: str
+    yname_: str
+    ylabels_: List[str]
+    
+@dataclass
+class CategUniVarClfTargetCorr(BaseUniVarClfTargetCorr):
+    p_x_y_: Dict[str, pd.DataFrame]
+    p_y_x_: Dict[str, pd.DataFrame]
+    
+    def serialize(self) -> dict:
+        return dict(
+            constructor = self.__class__.__name__,
+            colname = self.colname_,
+            yname = self.yname_,
+            ylables = self.ylabels_,
+            p_x_y = {
+                k: v.to_dict(orient = 'index')
+                for k, v in self.p_x_y_.items() 
+            },
+            p_y_x = {
+                k: v.to_dict(orient = 'index')
+                for k, v in self.p_y_x_.items() 
+            },
+        )
+
+    @classmethod
+    def deserialize(cls, stat_dict: dict):
+        c = cls()
+        c.colname_ = stat_dict['colname']
+        c.yname_ = stat_dict['yname']
+        c.ylabels_ = stat_dict['ylabels']
+        c.p_x_y_ = {
+            k: pd.DataFrame.from_dict(v, orient = 'index')
+            for k, v in stat_dict['p_x_y'].items()
+        }
+        c.p_y_x_ = {
+            k: pd.DataFrame.from_dict(v, orient = 'index')
+            for k, v in stat_dict['p_y_x'].items()
+        }
+        return c
+
+    
+@dataclass
+class NumericUniVarClfTargetCorr(BaseUniVarClfTargetCorr):
+    p_x_y_: Dict[str, pd.DataFrame]
+    p_y_x_: pd.DataFrame
+    
+    def serialize(self) -> dict:
+        return dict(
+            constructor = self.__class__.__name__,
+            colname = self.colname_,
+            yname = self.yname_,
+            ylables = self.ylabels_,
+            p_x_y = {
+                k: v.to_dict(orient = 'index')
+                for k, v in self.p_x_y_.items() 
+            },
+            p_y_x = (
+                self.p_y_x_
+                .replace({np.nan: None})
+                .to_dict(orient = 'records')
+            ),
+        )
+    
+    @classmethod
+    def deserialize(cls, stat_dict: dict):
+        c = cls()
+        c.colname_ = stat_dict['colname']
+        c.yname_ = stat_dict['yname']
+        c.ylabels_ = stat_dict['ylabels']
+        
+        c.p_x_y_ = {
+            k: pd.DataFrame.from_dict(v, orient = 'index')
+            for k, v in stat_dict['p_x_y'].items()
+        }
+        c.p_y_x_ = pd.DataFrame.from_records(stat_dict['p_y_x'])
+        return c

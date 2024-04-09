@@ -3,8 +3,8 @@ import ibis
 from ibis import _
 import numpy as np
 import pandas as pd
-from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, _BaseNumericHelper, serialize
-from luntaiDs.ModelingTools.Explore.summary import DescStat, QuantileStat, StatVar, XtremeStat, \
+from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, _BaseNumericHelper, _BaseUniVarClfEngine, serialize
+from luntaiDs.ModelingTools.Explore.summary import CategUniVarClfTargetCorr, DescStat, NumericUniVarClfTargetCorr, QuantileStat, StatVar, XtremeStat, \
     BinaryStatAttr, BinaryStatSummary, CategStatAttr, \
     CategStatSummary, NumericStatAttr, NumericStatSummary
         
@@ -247,6 +247,8 @@ class NumericHelperIbis(_BaseNumericHelper):
             .mutate(
                 _[self._colname]
                 .histogram(nbins = n_bins)
+                # need to clip because the max value will be at edge
+                .clip(lower = 0, upper = n_bins - 1)
                 .name('HIST_')
             )
             .group_by('HIST_')
@@ -256,24 +258,45 @@ class NumericHelperIbis(_BaseNumericHelper):
                 NUM_ = _[self._colname].count()
             )
             .to_pandas()
-        )
-        # need to clip because the max value will be at edge
-        hist['HIST_'] = hist['HIST_'].clip(0, n_bins - 1)
-        
-        hist_ = (
-            hist
-            .groupby('HIST_', as_index = False)
-            .agg({'NUM_' : 'sum'}) # merge max bucket with max+1 bucket
+            .dropna()
             .set_index('HIST_')
+        )
+        hist_ = (
+            pd.DataFrame(
+                index = np.arange(n_bins)
+            )
             .join(
-                pd.DataFrame(index = np.arange(n_bins)),
-                how = 'right'
+                hist,
+                how = 'left'
             )
             .fillna(0)
             ['NUM_'].astype('int')
             .values
         )
         return hist_, bin_edges_
+
+def _combine_x_y_ibis(df: ibis.expr.types.Table, 
+        combine_x_categ: bool = False) -> ibis.expr.types.Table:
+    df = (
+        df
+        .dropna(
+            subset = ['y'], 
+            how = 'any'
+        )
+    )
+    # categorical variable for x only:
+    if combine_x_categ:
+        vc = df['x'].topk(20)['x'].to_pandas() # only keep top 20 categories
+        df = (
+            df
+            .mutate(
+                _['x']
+                .isin(vc.tolist())
+                .ifelse(_['x'], 'Others')
+                .name('x')
+            )
+        )
+    return df.select('x', 'y')
 
 
 class EDAEngineIbis(_BaseEDAEngine):
@@ -545,3 +568,233 @@ class EDAEngineIbis(_BaseEDAEngine):
             )
             
         return num_stat
+    
+    
+    def fit_univarclf_categ(self, x_col: str, y_col: str) -> CategUniVarClfTargetCorr:
+        """fit univariate correlation for classififer target and categorical variable
+
+        :param str x_col: column of a categorical variable
+        :param str y_col: column of the classifier target varaible
+        :return CategUniVarClfTargetCorr: result object
+        """
+        df = (
+            self._df
+            .mutate(
+                x = _[x_col].cast('string').fillna('Missing_'),
+                y = _[y_col].cast('string'),
+            )
+        )
+        df = _combine_x_y_ibis(
+            df,
+            combine_x_categ = True # combine x's categories to be less than 20
+        )
+        
+        # count x/y joint distribution
+        num_x_y = (
+            df
+            .group_by(['y', 'x'])
+            .aggregate(_.count().name('NUM_'))
+            .to_pandas()
+        )
+        # categorical:  p(x | y)
+        p_x_y_ = {}
+        for y in num_x_y['y'].unique():
+            cs = num_x_y.set_index('y').loc[y, :]
+            d = pd.DataFrame({
+                    'count' : cs['NUM_'].values, 
+                    'perc' : cs['NUM_'].values  / cs['NUM_'].values.sum()
+                }, 
+                index = cs['x']
+            )
+            p_x_y_[y] = d.fillna(0)
+            
+        # categorical:  p(y | x)  prob (event rate when binary clf) by category
+        p_y_x_ = {}
+        for x in num_x_y['x'].unique():
+            cs = num_x_y.set_index('x').loc[x, :]
+            d = pd.DataFrame({
+                    'count' : cs['NUM_'].values, 
+                    'perc' : cs['NUM_'].values  / cs['NUM_'].values.sum()
+                }, 
+                index = cs['y']
+            )
+            p_y_x_[x] = d.fillna(0) #.to_dict(orient = 'index')
+            
+        return CategUniVarClfTargetCorr(
+            colname_ = x_col,
+            yname_ = y_col,
+            ylabels_ = (
+                self._df
+                .filter(~_[y_col].isnull())
+                .select(y_col)
+                .distinct()
+                [y_col]
+                .to_pandas()
+                .astype('str')
+                .tolist()
+            ),
+            p_x_y_ = p_x_y_,
+            p_y_x_ = p_y_x_
+        )
+    
+    def fit_univarclf_numeric(self, x_col: str, y_col: str) -> NumericUniVarClfTargetCorr:
+        """fit univariate correlation for classififer target and numeric variable
+
+        :param str x_col: column of a numeric variable
+        :param str y_col: column of the classifier target varaible
+        :return NumericUniVarClfTargetCorr: result object
+        """
+        df = (
+            self._df
+            .mutate(
+                x = _[x_col].cast('float'),
+                y = _[y_col].cast('string'),
+            )
+        )
+        df = _combine_x_y_ibis(
+            df,
+            combine_x_categ = False # do not combine for numeric
+        )
+        
+        # numerical:  p(x | y)  distribution by target (boxplot)
+        t = {'origin' : {}, 'log' : {}}
+        y_uniques = (
+            df
+            .select('y')
+            .distinct()
+            ['y']
+            .to_pandas()
+            .values
+        )
+        for y in y_uniques:
+            # EDA on given subset
+            eda = EDAEngineIbis(df.filter(_['y'] == y))
+            summary = eda.fit_numeric(
+                colname = 'x', # already renamed
+                attr = NumericStatAttr(
+                    setaside_zero_ = False, 
+                    log_scale_ = True, 
+                    xtreme_method_ = 'iqr', 
+                    bins_ = 100
+                )
+            )
+            
+            t['origin'][y] = {
+                'lbound': summary.xtreme_stat_.lbound,
+                'q1' : summary.stat_quantile_.q1,
+                'mean' : summary.stat_descriptive_.mean,
+                'median' : summary.stat_quantile_.median,
+                'q3' : summary.stat_quantile_.q3,
+                'rbound': summary.xtreme_stat_.rbound,
+            }
+            t['log'][y] = {
+                'lbound': summary.xtreme_stat_log_.lbound,
+                'q1' : summary.stat_quantile_log_.q1,
+                'mean' : summary.stat_descriptive_log_.mean,
+                'median' : summary.stat_quantile_log_.median,
+                'q3' : summary.stat_quantile_log_.q3,
+                'rbound': summary.xtreme_stat_log_.rbound,
+            }
+            
+        p_x_y_ = {
+            'origin' : pd.DataFrame.from_dict(t['origin'], orient='index'),
+            'log' : pd.DataFrame.from_dict(t['log'], orient='index')
+        }
+        
+        ## numerical:  p(y | x)  prob (event rate if binary clf) by bucketized x
+        n_bins = 8
+        pivot = (
+            df
+            .mutate(
+                _['x']
+                .isnull()
+                .ifelse(
+                    'Missing',
+                    (
+                        _['x']
+                        .histogram(nbins = n_bins)
+                        .clip(lower = 0, upper = n_bins - 1)
+                        .cast('string')
+                    )
+                )
+                .name('BUCKET_')
+            )
+            .fillna({'x' : 0}) # no use
+            .pivot_wider(
+                names_from="y",
+                names_prefix="Event",
+                values_from="x",
+                values_agg=_.count(),
+                values_fill=0
+            )
+            .to_pandas()
+        )
+        # get bin edges
+        stat = (
+            df
+            .aggregate(
+                MIN_ = _['x'].min(),
+                MAX_ = _['x'].max()
+            )
+            .to_pandas()
+            .astype('float')
+        )
+        min_ = stat.loc[0, 'MIN_']
+        max_ = stat.loc[0, 'MAX_']
+        bin_edges_ = np.linspace(min_, max_, n_bins + 1)
+        bins = pd.DataFrame({
+            'left' : bin_edges_[:-1],
+            'right' : bin_edges_[1:],
+            'BUCKET_' : np.arange(n_bins).astype('str')
+        })
+        bins['Bin'] = (
+            "[" 
+            + bins['left'].round(4).astype('str') 
+            + ", " 
+            + bins['right'].round(4).astype('str') 
+            + ")"
+        )
+
+        bin_pivot = bins.merge(
+            pivot,
+            on = 'BUCKET_',
+            how = 'outer'
+        )
+        bin_pivot['Bin'] = bin_pivot['Bin'].fillna('Missing')
+        # add counts
+        event_cols = (
+            pivot
+            .columns
+            .difference(['BUCKET_']) # remove BUCKET_ column
+            .tolist()
+        )
+        # add count
+        bin_pivot['Count'] = bin_pivot[event_cols].sum(axis = 1)
+        bin_pivot['Count (%)'] = bin_pivot['Count'] / bin_pivot['Count'].sum()
+        # add event ratios
+        ratio_cols = []
+        for event_col in event_cols:
+            event = event_col.replace('Event_', '')
+            ratio_col = f"Event_rate_{event}"
+            bin_pivot[ratio_col] = bin_pivot[event_col] / bin_pivot['Count']
+            ratio_cols.append(ratio_col)
+
+        final_cols = ['Bin', 'Count', 'Count (%)'] + event_cols + ratio_cols
+        p_y_x_ = bin_pivot[final_cols]
+        
+        return NumericUniVarClfTargetCorr(
+            colname_ = x_col,
+            yname_ = y_col,
+            ylabels_ = (
+                self._df
+                .filter(~_[y_col].isnull())
+                .select(y_col)
+                .distinct()
+                [y_col]
+                .to_pandas()
+                .astype('str')
+                .tolist()
+            ),
+            p_x_y_ = p_x_y_,
+            p_y_x_ = p_y_x_
+        )
