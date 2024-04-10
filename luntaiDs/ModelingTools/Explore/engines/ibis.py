@@ -383,8 +383,8 @@ class EDAEngineIbis(_BaseEDAEngine):
             ibis
             .case()
             .when(self._df[colname].isnull(), int(attr.na_to_pos_))
-            .when(self._df[colname].isin(attr.pos_values_), 1)
-            .else_(0)
+            .when(self._df[colname].isin(attr.pos_values_), "1")
+            .else_("0")
             .end()
             .value_counts()
             .to_pandas()
