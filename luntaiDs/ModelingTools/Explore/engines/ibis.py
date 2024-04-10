@@ -3,7 +3,7 @@ import ibis
 from ibis import _
 import numpy as np
 import pandas as pd
-from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, _BaseNumericHelper, _BaseUniVarClfEngine, serialize
+from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, _BaseNumericHelper, serialize
 from luntaiDs.ModelingTools.Explore.summary import CategUniVarClfTargetCorr, DescStat, NumericUniVarClfTargetCorr, QuantileStat, StatVar, XtremeStat, \
     BinaryStatAttr, BinaryStatSummary, CategStatAttr, \
     CategStatSummary, NumericStatAttr, NumericStatSummary

@@ -1,8 +1,8 @@
 from typing import List, Literal, Tuple, Dict
 import numpy as np
 import pandas as pd
-from luntaiDs.ModelingTools.Explore.summary import DescStat, QuantileStat, StatVar, TabularStat, XtremeStat, \
-    BaseStatAttr, BaseStatSummary, BaseStatObj, BinaryStatAttr, BinaryStatSummary, CategStatAttr, CategStatSummary, \
+from luntaiDs.ModelingTools.Explore.summary import DescStat, QuantileStat, TabularStat, XtremeStat, \
+    BaseStatAttr, BaseStatObj, BinaryStatAttr, BinaryStatSummary, CategStatAttr, CategStatSummary, \
         NominalCategStatAttr, NominalCategStatSummary, NumericStatAttr, \
         NumericStatSummary, OrdinalCategStatAttr, OrdinalCategStatSummary, \
         BinaryStatObj, OrdinalCategStatObj, NominalCategStatObj, NumericStatObj,\
