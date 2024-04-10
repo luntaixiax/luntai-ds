@@ -1,4 +1,4 @@
-from typing import List, Dict, Union, Literal, Optional, Any
+from typing import Optional, Union, Any, Dict, List, Literal, MutableSequence
 from dataclasses import asdict, dataclass
 import pandas as pd
 import numpy as np
@@ -40,7 +40,7 @@ def floatFy(X: pd.DataFrame) -> pd.DataFrame:
     return X.astype('float')
 
 @dataclass
-class BasePreproc:
+class BaseFeaturePreproc:
     def serialize(self) -> dict:
         return asdict(self)
     
@@ -53,7 +53,7 @@ class BasePreproc:
 
 
 @dataclass
-class BinaryPreproc(BasePreproc):
+class BinaryFeaturePreproc(BaseFeaturePreproc):
     def compile_sklearn_pipeline(self, param: BinaryStatObj) -> Pipeline:
         transformers = []
 
@@ -80,7 +80,7 @@ class BinaryPreproc(BasePreproc):
 
 
 @dataclass
-class OrdinalCategPreproc(BasePreproc):
+class OrdinalCategFeaturePreproc(BaseFeaturePreproc):
     impute: bool = True
     standardize: bool = False
 
@@ -116,7 +116,7 @@ class OrdinalCategPreproc(BasePreproc):
         return Pipeline(transformers)
 
 @dataclass
-class NominalCategStatPreproc(BasePreproc):
+class NominalCategFeaturePreproc(BaseFeaturePreproc):
     impute_value: Optional[str] = 'Other'
     bucket_strategy: Literal['freq', 'correlation'] = None
     encode_strategy: Optional[Literal['ohe', 'ce', 'woe']] = 'woe'
@@ -197,7 +197,7 @@ class NominalCategStatPreproc(BasePreproc):
 
 
 @dataclass
-class NumericPreproc(BasePreproc):
+class NumericFeaturePreproc(BaseFeaturePreproc):
     impute: bool = True
     normalize:bool = False
     standardize_strategy: Optional[Literal['robust', 'standard', 'maxabs']] = 'robust'
@@ -279,21 +279,21 @@ def get_preliminary_preprocess(ts: TabularStat) -> BaseEstimator:
     transformers = []    
     for col, stat in ts.items():
         if col in ts.get_nominal_cols():
-            transformer = NominalCategStatPreproc(
+            transformer = NominalCategFeaturePreproc(
                 impute_value = 'Other',
                 bucket_strategy = None,
                 encode_strategy = 'woe'
             ).compile_sklearn_pipeline(stat)
         elif col in ts.get_ordinal_cols():
-            transformer = OrdinalCategPreproc(
+            transformer = OrdinalCategFeaturePreproc(
                 impute = True,
                 standardize = True
             ).compile_sklearn_pipeline(stat)
         elif col in ts.get_binary_cols():
-            transformer = BinaryPreproc(
+            transformer = BinaryFeaturePreproc(
             ).compile_sklearn_pipeline(stat)
         elif col in ts.get_numeric_cols():
-            transformer = NumericPreproc(
+            transformer = NumericFeaturePreproc(
                 impute = True,
                 normalize = False,
                 standardize_strategy = 'robust'
@@ -332,20 +332,20 @@ def get_mutual_info_preprocess(ts: TabularStat) -> BaseEstimator:
                     vpercs_ = stat.summary.vpercs_,
                 )
             )
-            transformer = OrdinalCategPreproc(
+            transformer = OrdinalCategFeaturePreproc(
                 impute = True,
                 standardize = False
             ).compile_sklearn_pipeline(stat_ord)
         elif col in ts.get_ordinal_cols():
-            transformer = OrdinalCategPreproc(
+            transformer = OrdinalCategFeaturePreproc(
                 impute = True,
                 standardize = False
             ).compile_sklearn_pipeline(stat)
         elif col in ts.get_binary_cols():
-            transformer = BinaryPreproc(
+            transformer = BinaryFeaturePreproc(
             ).compile_sklearn_pipeline(stat)
         elif col in ts.get_numeric_cols():
-            transformer = NumericPreproc(
+            transformer = NumericFeaturePreproc(
                 impute = True,
                 normalize = False,
                 standardize_strategy = 'robust'
@@ -362,3 +362,140 @@ def get_mutual_info_preprocess(ts: TabularStat) -> BaseEstimator:
         )
     )
     return pipe
+
+"""preprocessing model"""
+
+@dataclass
+class BaseFeaturePreprocModel:
+    stat_obj: BaseStatObj
+    preproc: BaseFeaturePreproc
+    
+    def compile_sklearn_pipeline(self) -> Pipeline:
+        return self.preproc.compile_sklearn_pipeline(
+            param = self.stat_obj
+        )
+        
+    def serialize(self) -> dict:
+        return dict(
+            constructor = self.__class__.__name__,
+            colname = self.stat_obj.colname,
+            stat_obj = self.stat_obj.serialize(),
+            preproc = self.preproc.serialize()
+        )
+    
+    @classmethod
+    def deserialize(cls, model_dict: dict):
+        raise NotImplementedError("")
+        
+@dataclass
+class BinaryFeaturePreprocModel(BaseFeaturePreprocModel):
+    stat_obj: BinaryStatObj
+    preproc: BinaryFeaturePreproc = BinaryFeaturePreproc()
+    
+    @classmethod
+    def deserialize(cls, model_dict: dict):
+        return cls(
+            stat_obj = BinaryStatObj.deserialize(model_dict['stat_obj']),
+            preproc = BinaryFeaturePreproc.deserialize(model_dict['preproc'])
+        )
+        
+@dataclass
+class OrdinalFeaturePreprocModel(BaseFeaturePreprocModel):
+    stat_obj: OrdinalCategStatObj
+    preproc: OrdinalCategFeaturePreproc = OrdinalCategFeaturePreproc()
+    
+    @classmethod
+    def deserialize(cls, model_dict: dict):
+        return cls(
+            stat_obj = OrdinalCategStatObj.deserialize(model_dict['stat_obj']),
+            preproc = OrdinalCategFeaturePreproc.deserialize(model_dict['preproc'])
+        )
+        
+@dataclass
+class NominalFeaturePreprocModel(BaseFeaturePreprocModel):
+    stat_obj: NominalCategStatObj
+    preproc: NominalCategFeaturePreproc = NominalCategFeaturePreproc()
+    
+    @classmethod
+    def deserialize(cls, model_dict: dict):
+        return cls(
+            stat_obj = NominalCategStatObj.deserialize(model_dict['stat_obj']),
+            preproc = NominalCategFeaturePreproc.deserialize(model_dict['preproc'])
+        )
+        
+@dataclass
+class NumericFeaturePreprocModel(BaseFeaturePreprocModel):
+    stat_obj: NumericStatObj
+    preproc: NumericFeaturePreproc = NumericFeaturePreproc()
+    
+    @classmethod
+    def deserialize(cls, model_dict: dict):
+        return cls(
+            stat_obj = NumericStatObj.deserialize(model_dict['stat_obj']),
+            preproc = NumericFeaturePreproc.deserialize(model_dict['preproc'])
+        )
+    
+
+class TabularPreprocModel(
+        list, 
+        MutableSequence[BaseFeaturePreprocModel]
+    ):
+    CONSTRUCTORS = {
+        NumericFeaturePreprocModel.__name__: NumericFeaturePreprocModel,
+        NominalFeaturePreprocModel.__name__: NominalFeaturePreprocModel,
+        OrdinalFeaturePreprocModel.__name__: OrdinalFeaturePreprocModel,
+        BinaryFeaturePreprocModel.__name__: BinaryFeaturePreprocModel,
+    }
+    STAT_OBJ_MAPPING = {
+        NumericStatObj.__name__: NumericFeaturePreprocModel,
+        NominalCategStatObj.__name__: NominalFeaturePreprocModel,
+        OrdinalCategStatObj.__name__: OrdinalFeaturePreprocModel,
+        BinaryStatObj.__name__: BinaryFeaturePreprocModel,
+    }
+    """Tabular preprocessing model for multiple columns"""
+    
+    def serialize(self) -> list:
+        return [
+            model.serialize() for model in self
+        ]
+    
+    @classmethod
+    def deserialize(cls, model_serialized: list):
+        r = cls()
+        for model in model_serialized:
+            c = cls.CONSTRUCTORS.get(model['constructor']) # constructor
+            r.append(c.deserialize(model))
+        return r
+    
+    @classmethod
+    def from_tabular_stat(cls, ts: TabularStat):
+        r = cls()
+        for col, obj in ts.items():
+            c = cls.STAT_OBJ_MAPPING.get(obj.__class__.__name__) # constructor
+            model = c(stat_obj = obj)
+            r.append(model)
+        return r
+    
+    def to_tabular_stat(self) -> TabularStat:
+        ts = TabularStat()
+        for preproc_model in self:
+            col = preproc_model.stat_obj.colname
+            ts[col] = preproc_model.stat_obj
+        return ts
+    
+    def compile_sklearn_pipeline(self) -> Pipeline:
+        transformers = []    
+        for preproc_model in self:
+            col = preproc_model.stat_obj.colname
+            transformer = preproc_model.compile_sklearn_pipeline()
+            transformers.append(
+                (col, transformer, make_present_col_selector([col]))
+            )
+            
+        pipe = NamedTransformer(
+            ColumnTransformer(
+                transformers,
+                remainder='drop'
+            )
+        )
+        return pipe
