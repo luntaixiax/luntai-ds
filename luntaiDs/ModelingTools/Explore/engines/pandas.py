@@ -165,7 +165,6 @@ class EDAEnginePandas(_BaseEDAEngine):
         vector_binary = vector_binary.fillna(int(attr.na_to_pos_))
         binary_vcounts_ = (
             vector_binary
-            .astype('str') # need to convert to string for serialization
             .value_counts(dropna=True, normalize=False)
             .fillna(0)
         )
