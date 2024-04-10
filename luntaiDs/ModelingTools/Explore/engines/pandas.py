@@ -3,8 +3,7 @@ import numpy as np
 from optbinning import MulticlassOptimalBinning
 import pandas as pd
 from scipy.stats import variation, kstest
-from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, _BaseNumericHelper, serialize, \
-    _BaseUniVarClfEngine
+from luntaiDs.ModelingTools.Explore.engines.base import _BaseEDAEngine, _BaseNumericHelper, serialize
 from luntaiDs.ModelingTools.Explore.summary import BinaryStatAttr, BinaryStatSummary, CategStatAttr, \
     CategStatSummary, CategUniVarClfTargetCorr, DescStat, NumericUniVarClfTargetCorr, QuantileStat, StatVar, XtremeStat, NumericStatAttr, \
         NumericStatSummary, exp10pc, log10pc

@@ -1,4 +1,4 @@
-from typing import Optional, Union, Any, Dict, List, Literal, TypeVar, MutableMapping
+from typing import Optional, Union, Any, Dict, List, Literal, MutableMapping
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
 import pandas as pd
