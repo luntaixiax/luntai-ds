@@ -786,8 +786,6 @@ def get_columns_from_columntransformer(column_transformer: ColumnTransformer, in
         if not raw_col_names:
             # if raw_col_names = [] or None, indicates its unused during training and should be dropped,
             # the transformer will also be unfitted
-            logging.info(
-                f"Column name getter(Column transformer): unused columns, will drop: ({name}, {fitted_transformer}, {raw_col_names})")
             continue
 
         # try to use original get_feature_names_out
