@@ -20,7 +20,7 @@ google-cloud-storage==2.14.0
 pybigquery==0.5.0
 gcsfs==2023.12.2.post1
 fsspec==2023.12.2
-ibis-framework==8.0.0
+ibis-framework==9.1.0
 ibis-framework[clickhouse,bigquery,duckdb,pandas,pyspark,sqlite,polars]
 openpyxl==3.1.2
 scikit-learn==1.0.2

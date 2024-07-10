@@ -3,15 +3,12 @@ import logging
 import pandas as pd
 import numpy as np
 from functools import partial, partialmethod
-
-
 from sklearn.experimental import enable_iterative_imputer
 from scipy.special import softmax
 from scipy.cluster.hierarchy import dendrogram, linkage, fcluster
 from scipy.spatial.distance import squareform, pdist
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.feature_selection._univariate_selection import _clean_nans, _BaseFilter
-
 from imblearn.ensemble import BalancedRandomForestClassifier
 from imblearn.over_sampling import RandomOverSampler
 from sklearn.base import BaseEstimator, TransformerMixin, ClusterMixin, clone
@@ -2029,7 +2026,9 @@ class PreliminaryFeatureSelector:
         self.filtered_cols = self.filtered_cols.difference(dropped_cols)
         post_len = len(self.filtered_cols)
         print(
-            f"Model selection (feature importance or coeff score) filter (threshold = {selector.threshold_}): {pre_len - post_len} features eliminated (from {pre_len} to {post_len})")
+            f"Model selection (feature importance or coeff score) filter "
+            f"(threshold = {selector.threshold_}): {pre_len - post_len} features "
+            f"eliminated (from {pre_len} to {post_len})")
         print(f"Reduced features: {dropped_cols.tolist()}")
 
         if hasattr(selector.estimator_, "coef_"):

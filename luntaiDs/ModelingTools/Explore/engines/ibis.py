@@ -269,7 +269,7 @@ class NumericHelperIbis(_BaseNumericHelper):
                 hist,
                 how = 'left'
             )
-            .fillna(0)
+            .fill_null(0)
             ['NUM_'].astype('int')
             .values
         )
@@ -358,7 +358,7 @@ class EDAEngineIbis(_BaseEDAEngine):
         )
         vpercs_ = (
             vcounts_ / vcounts_.sum()
-        ).fillna(0)
+        ).fill_null(0)
         
         return CategStatSummary(
             colname_ = colname,
@@ -396,7 +396,7 @@ class EDAEngineIbis(_BaseEDAEngine):
         )
         binary_vpercs_ = (
             binary_vcounts_ / binary_vcounts_.sum()
-        ).fillna(0)
+        ).fill_null(0)
         
         return BinaryStatSummary(
             colname_ = common_stat_summary.colname_,
@@ -580,7 +580,7 @@ class EDAEngineIbis(_BaseEDAEngine):
         df = (
             self._df
             .mutate(
-                x = _[x_col].cast('string').fillna('Missing_'),
+                x = _[x_col].cast('string').fill_null('Missing_'),
                 y = _[y_col].cast('string'),
             )
         )
@@ -606,7 +606,7 @@ class EDAEngineIbis(_BaseEDAEngine):
                 }, 
                 index = cs['x']
             )
-            p_x_y_[y] = d.fillna(0)
+            p_x_y_[y] = d.fill_null(0)
             
         # categorical:  p(y | x)  prob (event rate when binary clf) by category
         p_y_x_ = {}
@@ -618,7 +618,7 @@ class EDAEngineIbis(_BaseEDAEngine):
                 }, 
                 index = cs['y']
             )
-            p_y_x_[x] = d.fillna(0) #.to_dict(orient = 'index')
+            p_y_x_[x] = d.fill_null(0) #.to_dict(orient = 'index')
             
         return CategUniVarClfTargetCorr(
             colname_ = x_col,
@@ -719,7 +719,7 @@ class EDAEngineIbis(_BaseEDAEngine):
                 )
                 .name('BUCKET_')
             )
-            .fillna({'x' : 0}) # no use
+            .fill_null({'x' : 0}) # no use
             .pivot_wider(
                 names_from="y",
                 names_prefix="Event",
@@ -760,7 +760,7 @@ class EDAEngineIbis(_BaseEDAEngine):
             on = 'BUCKET_',
             how = 'outer'
         )
-        bin_pivot['Bin'] = bin_pivot['Bin'].fillna('Missing')
+        bin_pivot['Bin'] = bin_pivot['Bin'].fill_null('Missing')
         # add counts
         event_cols = (
             pivot
