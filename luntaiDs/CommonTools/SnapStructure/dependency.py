@@ -1,43 +1,57 @@
 from __future__ import annotations
-from datetime import date
+from datetime import date, timedelta
+from dateutil.relativedelta import relativedelta
 import logging
 import time
-from typing import List
+from typing import List, Literal
 from collections import OrderedDict
 import pandas as pd
 import pyspark
 from luntaiDs.CommonTools.SnapStructure.structure import SnapshotDataManagerBase
-from luntaiDs.CommonTools.SnapStructure.tools import get_future_month_ends, get_past_month_ends
-from luntaiDs.CommonTools.utils import str2dt
+from luntaiDs.CommonTools.SnapStructure.tools import get_future_period_ends, get_past_period_ends
+from luntaiDs.CommonTools.utils import str2dt, offset_date
 
 """ Chain Executor with dependency check """
 
 class _CurrentStream:
-    def __init__(self, upstream):
+    def __init__(self, upstream, offset: int = 0, 
+                 freq: Literal['M', 'D', 'W'] = 'M'):
         self.upstream = upstream
+        self.offset = offset
+        self.freq = freq
 
     def get_exc_dts(self, snap_dt: date):
+        if self.offset != 0:
+            snap_dt = offset_date(snap_dt, offset = self.offset, freq = self.freq)
         return [snap_dt]
 
 
 class _FutureStream(_CurrentStream):
-    def __init__(self, upstream, future: int, freq: str = 'M'):
+    def __init__(self, upstream, future: int, offset: int = 0, 
+                 freq: Literal['M', 'D', 'W'] = 'M'):
         super().__init__(upstream)
         self.future = future
         self.freq = freq
+        self.offset = offset
 
     def get_exc_dts(self, snap_dt: date):
-        return get_future_month_ends(snap_dt, forward=self.future, freq = self.freq)
+        if self.offset != 0:
+            snap_dt = offset_date(snap_dt, offset = self.offset, freq = self.freq)
+        return get_future_period_ends(snap_dt, forward=self.future, freq = self.freq)
 
 
 class _PastStream(_CurrentStream):
-    def __init__(self, upstream, history: int, freq: str = 'M'):
+    def __init__(self, upstream, history: int, offset: int = 0, 
+                 freq: Literal['M', 'D', 'W'] = 'M'):
         super().__init__(upstream)
         self.history = history
         self.freq = freq
+        self.offset = offset
 
     def get_exc_dts(self, snap_dt: date):
-        return get_past_month_ends(snap_dt, history=self.history, freq = self.freq)[::-1]
+        if self.offset != 0:
+            snap_dt = offset_date(snap_dt, offset = self.offset, freq = self.freq)
+        return get_past_period_ends(snap_dt, history=self.history, freq = self.freq)[::-1]
     
 
 class ExecPlan:

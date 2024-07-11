@@ -55,12 +55,12 @@ def generate_cohort_list(start_month: date, end_month: date, freq: str = 'M') ->
     ts = pd.date_range(start = start_month, end = end_month, freq = freq).to_pydatetime()
     return [t.date() for t in ts]
 
-def get_past_month_ends(snap_dt: date, history:int = 12, freq: str = 'M') -> List[date]:
+def get_past_period_ends(snap_dt: date, history:int = 12, freq: str = 'M') -> List[date]:
     # return a list of month end date for the past 12 months prior to the snap_dt
     ts = pd.date_range(end = snap_dt, freq = freq, periods = history).to_pydatetime()
     return [t.date() for t in ts]
 
-def get_future_month_ends(snap_dt: date, forward:int = 12, freq: str = 'M') -> List[date]:
+def get_future_period_ends(snap_dt: date, forward:int = 12, freq: str = 'M') -> List[date]:
     # return a list of month end date for the past 12 months prior to the snap_dt
     ts = pd.date_range(start = snap_dt, freq = freq, periods = forward).to_pydatetime()
     return [t.date() for t in ts]
