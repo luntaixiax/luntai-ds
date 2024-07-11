@@ -1,13 +1,14 @@
 import logging
 import os
 import shutil
-from typing import Tuple, List, Union
+from typing import Literal, Tuple, List, Union
 from calendar import monthrange
 import uuid
 import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime, date
+from dateutil import relativedelta
 import time
 from tqdm.auto import tqdm
 from luntaiDs.CommonTools.settings import SETTINGS
@@ -37,6 +38,16 @@ def get_month_end_date(snap_year:int, snap_month:int) -> date:
         monthrange(snap_year, snap_month)[1]
     )
     return month_end_date
+
+def offset_date(base_date: date, offset: int, freq: Literal['M', 'D', 'W']):
+    if freq == 'M':
+        return base_date + relativedelta(months=offset)
+    elif freq == 'D':
+        return base_date + relativedelta(days=offset)
+    elif freq == 'W':
+        return base_date + relativedelta(weeks=offset)
+    else:
+        raise ValueError("freq can only be W/D/M")
 
 def save_xls(names, list_dfs, xls_path):
     with pd.ExcelWriter(xls_path) as writer:
