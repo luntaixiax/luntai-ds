@@ -8,7 +8,7 @@ import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime, date
-from dateutil import relativedelta
+from dateutil.relativedelta import relativedelta
 import time
 from tqdm.auto import tqdm
 from luntaiDs.CommonTools.settings import SETTINGS
