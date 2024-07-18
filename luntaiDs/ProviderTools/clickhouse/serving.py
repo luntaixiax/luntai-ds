@@ -1,48 +1,24 @@
-from typing import List, Dict, Union
+from typing import Union
 import ibis
 import pandas as pd
 import logging
-from luntaiDs.ModelingTools.Serving.data_registry import _BaseModelDataRegistry
+from luntaiDs.ModelingTools.Serving.data_registry import _ModelDataRegistryWarehouse
 from luntaiDs.ProviderTools.clickhouse.dbapi import WarehouseHandlerCHSQL
 
 
-class _BaseModelDataRegistryCH(_BaseModelDataRegistry):
-    DATA_ID_COL = "DATA_ID_"
-    TRAIN_TEST_IND_COL = "IS_TRAIN_"
+class _BaseModelDataRegistryCH(_ModelDataRegistryWarehouse):
     
     def __init__(self, handler: WarehouseHandlerCHSQL, schema: str, table: str):
         """initialize
 
-        :param WarehouseHandlerCHSQL handler: clickhouse handler
+        :param BaseWarehouseHandler handler: base warehouse handler
         :param str schema: schema for the table storing modeling data
         :param str table: table storing modeling data
         """
-        self.handler = handler
-        self.schema = schema
-        self.table = table
-        
-    def init_table(self):
-        raise NotImplementedError("")
-    
-    def get_table(self) -> ibis.expr.types.Table:
-        """get underlying training table using ibis
-
-        :return ibis.expr.types.Table: ibis table
-        """
-        return self.handler.get_table(schema = self.schema, table = self.table)
-
-    def get_existing_ids(self) -> List[str]:
-        """get list of registered data ids
-
-        :return List[str]: data ids
-        """
-        return (
-            self.get_table()
-            .select(self.DATA_ID_COL)
-            .distinct()
-            .to_pandas()
-            [self.DATA_ID_COL]
-            .tolist()
+        super().__init__(
+            handler=handler,
+            schema=schema,
+            table=table
         )
 
     def register(self, data_id: str, train_ds: Union[ibis.expr.types.Table | pd.DataFrame], 
@@ -108,36 +84,6 @@ class _BaseModelDataRegistryCH(_BaseModelDataRegistry):
             
         else:
             raise ValueError("train_ds and test_ds must be of type either pandas or ibis dataframe")
-            
-
-    def fetch(self, data_id: str, target_col: str = None):
-        """fetch training/testing dataset
-
-        :param str data_id: data id to be fetched
-        :param str target_col: the target column, defaults to None.
-        :return:
-            - if target_col given, will split to [X_train, y_train, X_test, y_test]
-            - if target_col not given, will just split to [train_ds, test_ds]
-        """
-        table = self.get_table()
-        train_ds = (
-            table
-            .filter((table[self.DATA_ID_COL] == data_id) & (table[self.TRAIN_TEST_IND_COL] == True))
-            .drop(self.DATA_ID_COL, self.TRAIN_TEST_IND_COL)
-        )
-        test_ds = (
-            table
-            .filter((table[self.DATA_ID_COL] == data_id) & (table[self.TRAIN_TEST_IND_COL] == False))
-            .drop(self.DATA_ID_COL, self.TRAIN_TEST_IND_COL)
-        )
-        if target_col:
-            X_train = train_ds.drop(target_col)
-            X_test = test_ds.drop(target_col)
-            y_train = train_ds[target_col]
-            y_test = test_ds[target_col]
-            return X_train, y_train, X_test, y_test
-        else:
-            return train_ds, test_ds
 
     def remove(self, data_id: str):
         """remove dataset from registry

@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import date
 import logging
 from typing import List
-import pandas as pd
-import pyspark
-from clickhouse_connect.driver.tools import insert_file
-from luntaiDs.CommonTools.sparker import SparkConnector
+import ibis
+from ibis import _
+from fsspec.implementations.local import LocalFileSystem
+from fsspec import AbstractFileSystem
 from luntaiDs.CommonTools.SnapStructure.structure import SnapshotDataManagerWarehouseMixin
 from luntaiDs.ProviderTools.clickhouse.dbapi import ClickHouse, WarehouseHandlerCHSQL
 
@@ -14,9 +14,9 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerWarehouseMixin, WarehouseHandl
     """files are saved as clickhouse tables under each schema.table
     """
     @classmethod
-    def setup(cls, db_conf: ClickHouse, spark_connector: SparkConnector = None, **settings):
-        super(SnapshotDataManagerCHSQL, cls).setup(spark_connector = spark_connector)
-        cls.connect(db_conf=db_conf, settings=settings)
+    def setup(cls, db_conf: ClickHouse, **settings):
+        super(SnapshotDataManagerCHSQL, cls).setup()
+        cls.connect(db_conf=db_conf, **settings)
         
     def save_qry(self, query: str, snap_dt: date, overwrite: bool = False):
         """save the query into the table using "insert into schema.table select ... " clause
@@ -46,27 +46,40 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerWarehouseMixin, WarehouseHandl
 
         logging.info(f"Successfully saved to {self.schema}.{self.table}@{snap_dt}")
         
-    def _save(self, df: pd.DataFrame, snap_dt: date, **kws):
-        """The pure logic to save pandas dataframe to the system, without handling existing record problem
+    def _save(self, df: ibis.expr.types.Table, snap_dt: date, **kws):
+        """The pure logic to save ibis dataframe to the system, without handling existing record problem
 
-        :param pd.DataFrame df: _description_
-        :param date snap_dt: _description_
-        :raises NotImplementedError: _description_
+        :param ibis.expr.types.Table df: the ibis dataframe
+        :param date snap_dt: the snap date to save
         """
-        self.save_pandas(
+        self.save_ibis(
             df = df,
             schema = self.schema,
             table = self.table,
             **kws
         )
         
-    def ingest_from_file(self, file_path:str, snap_dt: date, header:bool = True, overwrite:bool = True):
+    def ingest_from_file(self, snap_dt: date, file_path: str, 
+                        fs: AbstractFileSystem = LocalFileSystem(), 
+                        header:bool = True, overwrite:bool = True, 
+                        column_names: List[str] = None, compression: str = None, **settings):
+        """ingest from a parquet file from any fsspec compatible filesystem
+
+        :param date snap_dt: snap date for the file to ingest
+        :param str file_path: the absolute filepath on the given filesystem
+        :param AbstractFileSystem fs: fsspec compatible FS, defaults to LocalFileSystem()
+        :param bool header: where have a header or not, defaults to True
+        :param bool overwrite: whether to overwrite the existing data, defaults to True
+        :param List[str] column_names: used in clickhouse raw insert, defaults to None
+        :param str compression: compression format, defaults to None
+        """
         if overwrite:
             self.delete(snap_dt = snap_dt)
         else:
             num_records = self.count(snap_dt)
             if num_records > 0:
-                logging.warning(f"{num_records} records found for {self.schema}.{self.table}@{snap_dt}, will do nothing")
+                logging.warning(f"{num_records} records found for "
+                                f"{self.schema}.{self.table}@{snap_dt}, will do nothing")
                 return
             
         # extract file format
@@ -77,55 +90,30 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerWarehouseMixin, WarehouseHandl
         else:
             raise TypeError("File not supported")
         
-        insert_file(
-            client = self._ops.con,
-            table = self.table,
-            database = self.schema,
-            file_path = file_path,
-            fmt = fmt,
-        )
+        from clickhouse_connect.driver.query import quote_identifier
+
+        if not self.schema and self.table[0] not in ('`', "'") and self.table.find('.') > 0:
+            full_table = self.table
+        elif self.schema:
+            full_table = f'{quote_identifier(self.schema)}.{quote_identifier(self.table)}'
+        else:
+            full_table = quote_identifier(self.table)
+        if not fmt:
+            fmt = 'CSVWithNames'
+        if compression is None:
+            if file_path.endswith('.gzip') or file_path.endswith('.gz'):
+                compression = 'gzip'
+        with fs.open(file_path, 'rb') as obj:
+            self._ops.con.raw_insert(
+                full_table,
+                column_names=column_names,
+                insert_block=obj,
+                fmt=fmt,
+                settings=settings,
+                compression=compression
+            )
         logging.info(f"Successfully ingested file {file_path} to {self.schema}.{self.table}")
-    
-    def load(self, snap_dt: date, **kws) -> pyspark.sql.DataFrame:
-        """Read as spark dataframe (one snapshot date) data, and can also access from sc temporary view
 
-        :param snap_dt: snap_dt to load
-        :return:
-        """
-        if 'columns' in kws:
-            cols = ','.join(kws['columns'])
-        else:
-            cols = '*'
-        sql = f"""
-        select {cols} from {self.schema}.{self.table} where {self.snap_dt_key} = '{snap_dt}'
-        """
-        if hasattr(self, "sc"):
-            df = self.sc.query_db(self._db_conf, sql)
-            df.createOrReplaceTempView(f"{self.table}")
-            return df
-        else:
-            ValueError("No Spark Connector Specified, please call .setup() to bind a spark connector")
-
-    def loads(self, snap_dts: List[date], **kws) -> pyspark.sql.DataFrame:
-        """reads as pyspark dataframe (vertically concat of several given snap dates data)
-
-        :param snap_dts: list of snap dates to read
-        :return:
-        """
-        if 'columns' in kws:
-            cols = ','.join(kws['columns'])
-        else:
-            cols = '*'
-        snap_dt_range = ",".join(f"'{dt}'" for dt in snap_dts)
-        sql = f"""
-        select {cols} from {self.schema}.{self.table} where {self.snap_dt_key} in [{snap_dt_range}]
-        """
-        if hasattr(self, "sc"):
-            df = self.sc.query_db(self._db_conf, sql)
-            df.createOrReplaceTempView(f"{self.table}")
-            return df
-        else:
-            ValueError("No Spark Connector Specified, please call .setup() to bind a spark connector")
         
     def delete(self, snap_dt: date):
         """Delete a snap shot dataframe
@@ -142,15 +130,28 @@ class SnapshotDataManagerCHSQL(SnapshotDataManagerWarehouseMixin, WarehouseHandl
             self.execute(sql = sql)
         
     def duplicate(self, dst_schema: str, dst_table: str) -> SnapshotDataManagerCHSQL:
-        sql = """
-        insert into {dst_schema:Identifier}.{dst_table:Identifier} 
-        select * from {src_schema:Identifier}.{src_table:Identifier}"""
+        """duplicate the existing schema.table to new one, the existing one will be kept
+
+        :param dst_schema: destination schema
+        :param dst_table: destination table
+        :return:
+        """
         args = dict(
             dst_schema = dst_schema, 
             dst_table = dst_table, 
             src_schema = self.schema, 
             src_table = self.table
         )
+        # create table structure
+        sql = f"""
+        create table if not exists {dst_schema}.{dst_table}
+        AS {self.schema}.{self.table}"""
+        self.execute(sql = sql)
+        
+        # insert from select
+        sql = """
+        insert into {dst_schema:Identifier}.{dst_table:Identifier} 
+        select * from {src_schema:Identifier}.{src_table:Identifier}"""
         self.execute(sql = sql, parameters = args)
         new = SnapshotDataManagerCHSQL(
             schema = dst_schema,

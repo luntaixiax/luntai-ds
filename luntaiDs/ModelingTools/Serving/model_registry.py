@@ -1,10 +1,7 @@
-import os
-import io
 import json
-from collections import OrderedDict
-from typing import List, Dict
-from luntaiDs.CommonTools.accessor import loadJSON, toJSON
-from luntaiDs.CommonTools.obj_storage import ObjStorage
+from pathlib import Path
+from typing import List
+from fsspec import AbstractFileSystem
 
 class _BaseModelRegistry:
     """Base class for Simple Model Registry
@@ -147,9 +144,9 @@ class _BaseModelRegistry:
         raise NotImplementedError("")
     
     
-class _BaseModelRegistryLocalFS(_BaseModelRegistry):
-    """Base class for Simple Model Registry on Local Filesystem
-    Note LocalFS only means the configuration will be saved in local system, not model data
+class _BaseModelRegistryFileSystem(_BaseModelRegistry):
+    """Base class for Simple Model Registry on fsspec compatible Filesystem
+    Note only the configuration will be saved on the given file system, not model data
     model versioning is achieved by tracking model_id and its configuration
 
     configuration format:
@@ -161,21 +158,28 @@ class _BaseModelRegistryLocalFS(_BaseModelRegistry):
         }
     }
     """
-    def __init__(self, config_js_path: str):
+    def __init__(self, fs: AbstractFileSystem, config_js_path: str):
+        """model registry where config is saved to given filesystem
+
+        :param AbstractFileSystem fs: the fsspec compatible filesystem
+        :param str config_js_path: path of the js config file, if on object storage, 
+            the full path including buckets
         """
-        
-        :param config_js_path: maybe not used if not local file system
-        """
-        self.config_js_path = config_js_path
-        os.makedirs(os.path.dirname(config_js_path), exist_ok=True)
+        self._fs = fs
+        self._config_js_path = config_js_path
+        self._fs.makedirs(
+            path = Path(config_js_path).parent.as_posix(),
+            exist_ok = True
+        )
 
     def load_config(self) -> dict:
         """load configuration
         
         :return dict: configuration in dictionary format
         """
-        if os.path.exists(self.config_js_path):
-            config = loadJSON(self.config_js_path)
+        if self._fs.exists(self._config_js_path):
+            with self._fs.open(self._config_js_path, 'r') as obj:
+                config = json.loads(obj.read())
         else:
             config = {
                 "prod" : None,
@@ -188,52 +192,5 @@ class _BaseModelRegistryLocalFS(_BaseModelRegistry):
 
         :param dict config: configuration in dictionary format
         """
-        toJSON(config, self.config_js_path)
-        
-        
-class _BaseModelRegistryObjStorage(_BaseModelRegistry):
-    """Base class for Simple Model Registry on ObjStorage Filesystem
-    Note ObjStorage only means the configuration will be saved in ObjStorage system, not model data
-    model versioning is achieved by tracking model_id and its configuration
-
-    configuration format:
-    {
-        "prod" : "MODEL_ID",
-        "archive" : {
-            "MODEL_ID_A" : {CONFIG_A},
-            "MODEL_ID_B" : {CONFIG_B},
-        }
-    }
-    """
-    def __init__(self, objstore: ObjStorage, config_js_path: str):
-        """
-        
-        :param config_js_path: maybe not used if not local file system
-        """
-        self.config_js_path = config_js_path
-        self._objstore = objstore
-
-    def load_config(self) -> dict:
-        """load configuration
-        
-        :return dict: configuration in dictionary format
-        """
-        try:
-            return json.loads(
-                self._objstore.read_obj(self.config_js_path), 
-                object_pairs_hook = OrderedDict
-            )
-        except Exception:
-            config = {
-                "prod" : None,
-                "archive": {}
-            }
-        return config
-
-    def save_config(self, config:dict):
-        """save configuration dictionary
-
-        :param dict config: configuration in dictionary format
-        """
-        content = bytes(json.dumps(config).encode('UTF-8'))
-        self._objstore.save_obj(content, self.config_js_path)
+        with self._fs.open(self._config_js_path, 'w') as obj:
+            json.dump(config, obj, indent = 4)

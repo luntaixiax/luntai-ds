@@ -67,7 +67,16 @@ class BaseWarehouseHandler:
     def save_pandas(self, df: pd.DataFrame, schema: str, table: str, **kws):
         """The pure logic to save pandas dataframe to the system, without handling existing record problem
 
-        :param pd.DataFrame df: _description_
+        :param pd.DataFrame df: pandas table
+        :param str schema: schema/database
+        :param str table: table name
+        """
+        raise NotImplementedError("")
+    
+    def save_ibis(self, df: ibis.expr.types.Table, schema: str, table: str, **kws):
+        """The pure logic to save ibis dataframe to the system, without handling existing record problem
+
+        :param ibis.expr.types.Table df: ibis table
         :param str schema: schema/database
         :param str table: table name
         """

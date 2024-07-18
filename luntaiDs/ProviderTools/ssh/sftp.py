@@ -1,13 +1,26 @@
 import contextlib
 import fnmatch
 import os
-import glob
+from fsspec.implementations.sftp import SFTPFileSystem
 from typing import List
 import paramiko
 import logging
 from stat import S_ISDIR, S_ISREG
 from tqdm.auto import tqdm
 
+
+class SFTPFileSystem(SFTPFileSystem):
+    """fsspec implementation of SFTP is not complete"""
+    def cp_file(self, path1, path2, **kwargs):
+        path1 = self._strip_protocol(path1)
+        path2 = self._strip_protocol(path2)
+        if self.isfile(path1):
+            self.client.exec_command(f"cp {path1} {path2}")
+        elif self.isdir(path1):
+            self.mkdirs(path2, exist_ok=True)
+        else:
+            raise FileNotFoundError(path1)
+        
 class SFTP:
     def __init__(self, host: str, port: int, username: str, password: str, private_key_file: str=None):
         """Remote server operations using paramiko

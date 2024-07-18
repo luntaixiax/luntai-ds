@@ -1,78 +1,111 @@
 from pathlib import Path
-import os
+from fsspec import AbstractFileSystem
 import yaml
-from botocore.exceptions import ClientError
 from luntaiDs.CommonTools.dtyper import DSchema
-from luntaiDs.CommonTools.obj_storage import ObjStorage
 
 
 class BaseSchemaManager:
+    """base interface for managing table schema metadata
+    
+    each schema have multiple tables, and each table have a dictionary of schema metadata
+    """
     def write(self, schema: str, table: str, dschema: DSchema):
+        """save the given table schema into the given schema/table
+
+        :param str schema: the schema name
+        :param str table: the table name
+        :param DSchema dschema: the table schema object
+        """
         content = dschema.to_js()
         self.write_raw(schema, table, content)
     
     def write_raw(self, schema: str, table: str, content: dict):
+        """handle how to write raw (dictionary) config into given schema/table
+
+        :param str schema: the schema name
+        :param str table: the table name
+        :param dict content: the dict version of Dschema object
+        """
         raise NotImplementedError("")
     
     def read(self, schema: str, table: str) -> DSchema:
+        """read from the system and return the assembled DSchema object
+
+        :param str schema: the schema name
+        :param str table: the table name
+        :return DSchema: the table schema object
+        """
         content = self.read_raw(schema, table)
         return DSchema.from_js(content)
     
     def read_raw(self, schema: str, table: str) -> dict:
-        raise NotImplementedError("")
-    
+        """handle how to write read (dictionary) config from given schema/table
 
-class LocalSchemaManager(BaseSchemaManager):
-    """Table Schema Manager on local File System
+        :param str schema: the schema name
+        :param str table: the table name
+        :return dict: the dict version of Dschema object 
+        """
+        raise NotImplementedError("")
+
+
+class SchemaManagerFileSystem(BaseSchemaManager):
+    """Table Schema Manager on fsspec compatible filesystem
     """
-    def __init__(self, root_dir: str):
-        self.root_dir = root_dir
+    def __init__(self, fs: AbstractFileSystem, root_dir: str):
+        """schema manager for file system
+        
+        folder structure:
+        root_dir
+            - schema1
+                - table A.yml
+                - table B.yml
+            - schema2
+                - table C.yml
+                - table D.yml
+
+        :param AbstractFileSystem fs: the fsspec compatible filesystem
+        :param str root_dir: root path, if on object storage, 
+            the full path including buckets
+        """
+        self._fs = fs
+        self._root_dir = root_dir
         
     def write_raw(self, schema: str, table: str, content: dict):
-        # create path
-        schema_folder = Path(self.root_dir) / schema
-        schema_folder.mkdir(parents = True, exist_ok = True)
-        # save file
+        """handle how to write raw (dictionary) config into given schema/table
+
+        :param str schema: the schema name
+        :param str table: the table name
+        :param dict content: the dict version of Dschema object
+        """
+        # create folder
+        schema_folder = Path(self._root_dir) / schema
+        self._fs.makedirs(
+            path = schema_folder.as_posix(),
+            exist_ok = True
+        )
+        # save content to file
         schema_file = schema_folder / f"{table}.yml"
-        with open(schema_file, 'w') as obj:
-            yaml.dump(content, obj, default_flow_style=False, sort_keys=False)
+        with self._fs.open(schema_file, 'w') as obj:
+            yaml.dump(
+                content, 
+                obj, 
+                default_flow_style = True, 
+                sort_keys = True
+            )
             
     def read_raw(self, schema: str, table: str) -> dict:
-        schema_file = Path(self.root_dir) / schema / f"{table}.yml"
+        """handle how to write read (dictionary) config from given schema/table
+
+        :param str schema: the schema name
+        :param str table: the table name
+        :return dict: the dict version of Dschema object 
+        """
+        schema_file = Path(self._root_dir) / schema / f"{table}.yml"
         try:
-            with open(schema_file, 'r') as obj:
-                record = yaml.safe_load(obj)
+            with self._fs.open(schema_file, 'r') as obj:
+                record = yaml.load(obj, Loader=yaml.Loader)
         except FileNotFoundError as e:
             raise ValueError("No record found for given schema and table")
         else:
             return record
-        
-        
-class ObjStorageSchemaManager(BaseSchemaManager):
-    """Table Schema Manager on object storage (S3, GCS, etc.)
-    """
-    def __init__(self, obj_st: ObjStorage, bucket: str, root_dir: str):
-        obj_st.enter_bucket(bucket)
-        self._obj_st = obj_st
-        self.root_dir = root_dir
-        
-    def write_raw(self, schema: str, table: str, content: dict):
-        # create content
-        content_str = yaml.dump(content, default_flow_style=False, sort_keys=False)
-        content_bytes = bytes(content_str, encoding = 'utf8')
-        # save config
-        schema_file = os.path.join(self.root_dir, schema, f"{table}.yml")
-        self._obj_st.save_obj(
-            body = content_bytes,
-            remote_path = schema_file
-        )
-        
-    def read_raw(self, schema: str, table: str) -> dict:
-        schema_file = os.path.join(self.root_dir, schema, f"{table}.yml")
-        try:
-            obj = self._obj_st.read_obj(remote_path = schema_file)
-            record = yaml.safe_load(obj)
-        except ClientError as e:
-            raise ValueError("No record found for given schema and table")
-        return record
     

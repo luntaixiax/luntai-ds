@@ -6,6 +6,7 @@ import clickhouse_connect
 from clickhouse_connect.driver.tools import insert_file
 import pandas as pd
 import ibis
+import pyarrow as pa
 from luntaiDs.CommonTools.dbapi import baseDbInf
 from luntaiDs.CommonTools.dtyper import DSchema
 from luntaiDs.CommonTools.warehouse import BaseWarehouseHandler
@@ -142,6 +143,25 @@ class WarehouseHandlerCHSQL(BaseWarehouseHandler):
             database = schema,
             **kws
         )
+    
+    def save_ibis(self, df: ibis.expr.types.Table, schema: str, table: str, **kws):
+        """The pure logic to save ibis dataframe to the system, without handling existing record problem
+
+        :param ibis.expr.types.Table df: ibis table
+        :param str schema: schema/database
+        :param str table: table name
+        """
+        chunk_size = kws.get('chunk_size', 1048576)
+        df_arr: pa.RecordBatchReader = df.to_pyarrow_batches(chunk_size = chunk_size)
+        for df_batch in df_arr:
+            df_: pa.Table = pa.Table.from_batches([df_batch], schema = df_batch.schema)
+            self._ops.insert(
+                name = table,
+                obj = df_,
+                database = schema,
+                **kws
+            )
+        
         
     def delete_table(self, schema: str, table: str):
         """drop whole table

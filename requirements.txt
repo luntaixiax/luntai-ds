@@ -8,18 +8,20 @@ teradata==15.10.0.21
 teradatasql==17.20.0.0
 teradatasqlalchemy==17.0.0.3
 tqdm==4.64.1
-pandas==2.1.2 # cannot go beyond, or error with ibis
-pyarrow==15.0.0
+feast==0.39.1
+pyarrow==15.0 # mlflow block this from upgrading
+fsspec==2024.6.1
+universal_pathlib==0.2.2
+s3fs==2024.6.1
+gcsfs==2024.6.1
+pandas==2.2.2
 pyspark==3.3.4
 ortools==9.4.1874 #9.5.2237
-boto3==1.26.76
 google-api-python-client==2.115.0
 google-auth-httplib2==0.2.0
 google-auth-oauthlib==1.2.0
 google-cloud-storage==2.14.0
 pybigquery==0.5.0
-gcsfs==2023.12.2.post1
-fsspec==2023.12.2
 ibis-framework==9.1.0
 ibis-framework[clickhouse,bigquery,duckdb,pandas,pyspark,sqlite,polars]
 openpyxl==3.1.2
@@ -37,6 +39,5 @@ joblib==1.1.1
 uvicorn==0.22.0
 fastapi==0.100.1
 bokeh==2.4.3
-evidently==0.4.0
 toml==0.10.2
-mlflow==2.14.2
+mlflow==2.14.3
