@@ -4,6 +4,10 @@ import shutil
 from typing import Literal, Tuple, List, Union
 from calendar import monthrange
 import uuid
+from fsspec import AbstractFileSystem
+import pyarrow as pa
+import pyarrow.parquet as pq
+import ibis
 import requests
 import pandas as pd
 import numpy as np
@@ -387,7 +391,36 @@ class TempFolder:
 
     def getTempFolderPath(self):
         return self.temp_folder
-    
+
+def save_ibis_to_parquet_on_fs(df: ibis.expr.types.Table, fs: AbstractFileSystem, filepath: str, **kws):
+    """save ibis dataframe (from any backend) to parquet file on given filesystem
+
+    :param ibis.expr.types.Table df: ibis dataframe
+    :param AbstractFileSystem fs: fsspec compatible filesystem
+    :param str filepath: root path of file, if on object storage, 
+            the full path including buckets
+    """
+    chunk_size = kws.get('chunk_size', 1048576)
+    with fs.open(path = filepath, mode = 'wb') as obj:
+        df_arr: pa.RecordBatchReader = df.to_pyarrow_batches(chunk_size = chunk_size)
+        with pq.ParquetWriter(where=obj, schema=df_arr.schema, **kws) as writer:
+            for df_batch in df_arr:
+                writer.write_batch(df_batch)
+                
+def save_pandas_to_parquet_on_fs(df: pd.DataFrame, fs: AbstractFileSystem, filepath: str, **kws):
+    """save pandas dataframe (from any backend) to parquet file on given filesystem
+
+    :param pd.DataFrame df: pandas dataframe
+    :param AbstractFileSystem fs: fsspec compatible filesystem
+    :param str filepath: root path of file, if on object storage, 
+            the full path including buckets
+    """
+    with fs.open(path = filepath, mode = 'wb') as obj:
+        df_arr: pa.Table = pa.Table.from_pandas(df)
+        with pq.ParquetWriter(where=obj, schema=df_arr.schema, **kws) as writer:
+            writer.write_table(df_arr)
+
+
 if __name__ == '__main__':
     dt = date(2021, 1, 4)
     print(dt2str(dt))

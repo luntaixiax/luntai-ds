@@ -1,32 +1,22 @@
 from __future__ import annotations
-import os
-import shutil
-from datetime import date
-import time
-from distutils.dir_util import copy_tree
-from pathlib import Path
 from typing import List
-import logging
+from pathlib import Path
 import pandas as pd
-import pyspark
-from tqdm.auto import tqdm
+import pyarrow as pa
+import pyarrow.parquet as pq
+import fsspec
+import logging
 import ibis
-from ibis.expr.schema import Schema
-from ibis import schema
-from luntaiDs.CommonTools.SnapStructure.tools import get_file_list_pattern, match_date_from_str
-from luntaiDs.CommonTools.dbapi import baseDbInf, dbIO
+from datetime import date
+from luntaiDs.CommonTools.SnapStructure.tools import match_date_from_str
 from luntaiDs.CommonTools.dtyper import DSchema
-from luntaiDs.CommonTools.sparker import SparkConnector
-from luntaiDs.CommonTools.utils import str2dt
-from luntaiDs.CommonTools.obj_storage import ObjStorage
+from luntaiDs.CommonTools.utils import save_ibis_to_parquet_on_fs, str2dt
 
     
 class SnapshotDataManagerBase:
     @classmethod
-    def setup(cls, spark_connector: SparkConnector = None, default_engine:str = 'pandas'):
-        if spark_connector:
-            cls.sc = spark_connector
-        cls.default_engine = default_engine
+    def setup(cls,):
+        pass
 
     def __init__(self, schema:str, table:str):
         """virtual database management interface
@@ -51,31 +41,16 @@ class SnapshotDataManagerBase:
     def init_table(self, *args, **kws):
         """initialize schema/table
 
-        :return:
         """
         raise NotImplementedError("")
     
-    def get_schema(self) -> Schema:
+    def get_schema(self) -> ibis.expr.schema.Schema:
         """Check dtypes of the given schema/dataset
 
-        :return:
+        :return: the ibis schema of the given table
         """
+        return self.read_random_snap().schema()
 
-        if self.default_engine == 'pandas':
-            df_random = self.read_random_snap()
-            schema_ = []
-            for n, t in zip(df_random.columns, df_random.dtypes):
-                # https://numpy.org/doc/stable/reference/generated/numpy.dtype.kind.html
-                if t.kind == 'O':
-                    schema_.append((n, ibis.expr.datatypes.String()))
-                else:
-                    schema_.append((n, ibis.dtype(t)))
-            return schema(schema_)
-        if self.default_engine == 'spark':
-            df_random = self.load_random_snap()
-            return Schema.from_pyarrow(df_random.dtypes)
-        else:
-            raise ValueError("engine can only be spark or pandas")
     
     def pre_save_check(self, snap_dt: date, overwrite: bool = False) -> bool:
         """pre-check before inserting records, will delete existing records at snap_dt if overwrite is set to True
@@ -90,81 +65,39 @@ class SnapshotDataManagerBase:
         else:
             num_records = self.count(snap_dt)
             if num_records > 0:
-                logging.warning(f"Presave check failed, {num_records} existing records found for {self.schema}.{self.table}@{snap_dt} while overwrite is set to False")
+                logging.warning(f"Presave check failed, {num_records} existing records found for "
+                                f"{self.schema}.{self.table}@{snap_dt} while overwrite is set to False")
                 return False
             return True
     
-    def _save(self, df: pd.DataFrame, snap_dt: date, **kws):
-        """The pure logic to save pandas dataframe to the system, without handling existing record problem
+    def _save(self, df: ibis.expr.types.Table, snap_dt: date, **kws):
+        """The pure logic to save ibis dataframe to the system, without handling existing record problem
 
-        :param pd.DataFrame df: _description_
-        :param date snap_dt: _description_
-        :raises NotImplementedError: _description_
+        :param ibis.expr.types.Table df: the ibis dataframe
+        :param date snap_dt: the snap date to save
         """
         raise NotImplementedError("")
     
-    def save(self, df: pd.DataFrame, snap_dt: date, overwrite: bool = False, **kws):
+    def save(self, df: ibis.expr.types.Table, snap_dt: date, overwrite: bool = False, **kws):
         """save pandas dataframe to the system
 
-        :param pd.DataFrame df: _description_
-        :param date snap_dt: _description_
+        :param ibis.expr.types.Table df: the ibis dataframe
+        :param date snap_dt: the snap date to save
         :param overwrite snap_dt: whether to overwrite the existing record if any
         :raises NotImplementedError: _description_
         """
         if not self.pre_save_check(snap_dt = snap_dt, overwrite = overwrite):
             return
         
-        logging.info(f"Saving dataframe, shape {df.shape}, into {self.schema}.{self.table}")
+        logging.info(f"Saving dataframe, schema {df.schema()} into {self.schema}.{self.table}")
         self._save(df = df, snap_dt = snap_dt, **kws)
-        logging.info(f"Successfully saved {len(df)} records to {self.schema}.{self.table}@{snap_dt}")
-
-    def _save_partitions(self, df: pyspark.sql.DataFrame, snap_dt: date, **kws):
-        """the pure logic to save pyspark dataframe to the system, without handling existing record problem
-
-        :param pyspark.sql.DataFrame df: _description_
-        :param date snap_dt: _description_
-        :raises NotImplementedError: _description_
-        """
-        raise NotImplementedError("")
-
-    def save_partitions(self, df: pyspark.sql.DataFrame, snap_dt: date, overwrite: bool = False, **kws):
-        """save pyspark dataframe to the system
-
-        :param pyspark.sql.DataFrame df: _description_
-        :param date snap_dt: _description_
-        :param overwrite snap_dt: whether to overwrite the existing record if any
-        :raises NotImplementedError: _description_
-        """
-        if not self.pre_save_check(snap_dt = snap_dt, overwrite = overwrite):
-            return
-        
-        self._save_partitions(df = df, snap_dt = snap_dt, **kws)
         logging.info(f"Successfully saved {df.count()} records to {self.schema}.{self.table}@{snap_dt}")
-
-    def etl_from_db(self, db_conf: baseDbInf, sql: str, snap_dt: date, engine: str = 'pandas'):
-        """do ETL work, extracting data from database and save it to local dir
-
-        :param db_conf: the database configuration object, specify which db and connection param
-        :param sql: the sql to do the ETL
-        :param snap_dt: the snap date to do the ETL, for storage purpose
-        :param engine: the engine to query_extract {pandas, spark}
-        :return:
-        """
-        if engine == "pandas":
-            db_conn = dbIO(db_conf)
-            df = db_conn.query_sql_df(sql)
-            self.save(df, snap_dt)
-        elif engine == "spark":
-            # spark data query_extract
-            if hasattr(self, "sc"):
-                df = self.sc.query_db(db_conf, sql)
-                self.save_partitions(df, snap_dt)
-            else:
-                raise ValueError("No spark session binded, please bind via .setup() method")
-        else:
-            raise ValueError("Engine can only be pandas or spark")
         
     def get_existing_snap_dts(self) -> List[date]:
+        """get existing snap dates as a list
+
+        :return List[date]: list of snap dates
+        """
         raise NotImplementedError("")
     
     def count(self, snap_dt: date) -> int:
@@ -175,16 +108,37 @@ class SnapshotDataManagerBase:
         """
         if snap_dt not in self.get_existing_snap_dts():
             return 0
-        if self.default_engine == 'pandas':
-            df = self.read(snap_dt=snap_dt)
-            return len(df)
-        if self.default_engine == 'spark':
-            df = self.load(snap_dt=snap_dt)
-            return df.count()
-        else:
-            raise ValueError("engine can only be spark or pandas")
+        df = self.read(snap_dt=snap_dt)
+        return df.count().to_pandas() # convert to scalar
     
-    def read(self, snap_dt: date, **kws) -> pd.DataFrame:
+    def read(self, snap_dt: date, **kws) -> ibis.expr.types.Table:
+        """Read as ibis dataframe (one snapshot date) data
+
+        :param snap_dt: snap_dt to load
+        :return:
+        """
+        raise NotImplementedError("")
+    
+    def reads(self, snap_dts: List[date], **kws) -> ibis.expr.types.Table:
+        """reads as ibis dataframe (vertically concat of several given snap dates data)
+
+        :param snap_dts: list of snap dates to read
+        :return:
+        """
+        raise NotImplementedError("")
+
+    def read_random_snap(self) -> ibis.expr.types.Table:
+        """Select a random snap from the schema.table
+
+        :return:
+        """
+        from random import choice
+
+        existing_snaps = self.get_existing_snap_dts()
+        random_snap = choice(existing_snaps)
+        return self.read(random_snap)
+    
+    def read_pd(self, snap_dt: date, **kws) -> pd.DataFrame:
         """Read as pandas dataframe (one snapshot date) data
 
         :param snap_dt: snap_dt to load
@@ -192,51 +146,24 @@ class SnapshotDataManagerBase:
         """
         raise NotImplementedError("")
     
-    def reads(self, snap_dts: List[date], **kws) -> pd.DataFrame:
+    def reads_pd(self, snap_dts: List[date], **kws) -> pd.DataFrame:
         """reads as pandas dataframe (vertically concat of several given snap dates data)
 
         :param snap_dts: list of snap dates to read
         :return:
         """
         raise NotImplementedError("")
-
-    def read_random_snap(self) -> pd.DataFrame:
+    
+    def read_random_pd_snap(self) -> pd.DataFrame:
         """Select a random snap from the schema.table
 
         :return:
         """
-        import random
+        from random import choice
 
         existing_snaps = self.get_existing_snap_dts()
-        random_snap = random.choice(existing_snaps)
-        return self.read(random_snap)
-    
-    def load(self, snap_dt: date, **kws) -> pyspark.sql.DataFrame:
-        """Read as spark dataframe (one snapshot date) data, and can also access from sc temporary view
-
-        :param snap_dt: snap_dt to load
-        :return:
-        """
-        raise NotImplementedError("")
-
-    def load_random_snap(self) -> pyspark.sql.DataFrame:
-        """Select a random snap from the schema.table
-
-        :return:
-        """
-        import random
-
-        existing_snaps = self.get_existing_snap_dts()
-        random_snap = random.choice(existing_snaps)
-        return self.load(random_snap)
-    
-    def loads(self, snap_dts: List[date], **kws) -> pyspark.sql.DataFrame:
-        """reads as pyspark dataframe (vertically concat of several given snap dates data)
-
-        :param snap_dts: list of snap dates to read
-        :return:
-        """
-        raise NotImplementedError("")
+        random_snap = choice(existing_snaps)
+        return self.read_pd(random_snap)
     
     def delete(self, snap_dt: date):
         """Delete a snap shot dataframe
@@ -285,21 +212,26 @@ class SnapshotDataManagerBase:
         rows = self.count(snap_dt = snap_dt)
         return rows > rows_threshold
     
-
-
-class SnapshotDataManagerLocalFS(SnapshotDataManagerBase):
+    
+class SnapshotDataManagerFileSystem(SnapshotDataManagerBase):
     """files are saved as parquet snapshots under each schema.table
         file naming convention: dir/tablename_YYYY-MM-DD.parquet
+        using fsspec engine for different implementation of FS
+            - local
+            - s3/minio
+            - gcs
+            - azure blob storage
+            - http FS
     """
-
     @classmethod
-    def setup(cls, root_dir: str, spark_connector: SparkConnector = None, default_engine:str = 'pandas'):
-        super(SnapshotDataManagerLocalFS, cls).setup(
-            spark_connector = spark_connector,
-            default_engine = default_engine
-        )
+    def setup(cls, fs: fsspec.AbstractFileSystem, root_dir: str):
+        super(SnapshotDataManagerFileSystem, cls).setup()
         cls.ROOT_DIR = root_dir
-        cls.default_engine = default_engine
+        #cls._fs: fsspec.AbstractFileSystem = ArrowFSWrapper(fs)
+        cls._fs = fs
+        # duckdb engine to read table
+        cls._ibis_con = ibis.duckdb.connect()
+        cls._ibis_con.register_filesystem(fs)
         
     def __init__(self, schema:str, table:str):
         """virtual database management interface
@@ -308,9 +240,19 @@ class SnapshotDataManagerLocalFS(SnapshotDataManagerBase):
         :param table:  the virtual table under each schema
         """
         super().__init__(schema = schema, table = table)
-        dir = os.path.join(self.ROOT_DIR, schema, table)
-        self.dir = dir  # the root path of the table under each schema
+        dir = Path(self.ROOT_DIR) / schema / table
+        self.dir: str = dir.as_posix()  # the root path of the table under each schema
         self.init_table()
+        
+    def init_table(self):
+        """initialize schema/table
+        
+        https://filesystem-spec.readthedocs.io/en/latest/api.html#fsspec.archive.AbstractArchiveFileSystem.info
+        """
+        self._fs.makedirs(
+            path = self.dir,
+            exist_ok = True
+        )
         
     def exist(self) -> bool:
         """whether the schema and table exist, or ready to do operations
@@ -318,381 +260,177 @@ class SnapshotDataManagerLocalFS(SnapshotDataManagerBase):
 
         :return bool: whether the table and schema exists and ready
         """
-        return os.path.exists(self.dir)
-
-    def init_table(self):
-        # https://note.nkmk.me/en/python-os-mkdir-makedirs/
-        os.makedirs(self.dir, exist_ok = True)
-
-    def get_filename(self, snap_dt: date) -> str:
-        return f"{self.table}_{snap_dt}.parquet"
-
-    def get_default_file_path(self, snap_dt: date) -> str:
-        return os.path.join(self.dir, self.get_filename(snap_dt))
+        return self._fs.exists(path = self.dir)
     
+    def get_filename(self, snap_dt: date) -> str:
+        """get parquet file name
 
-    def _save(self, df: pd.DataFrame, snap_dt: date, **kws):
-        """The pure logic to save pandas dataframe to the system, without handling existing record problem
-
-        :param pd.DataFrame df: _description_
-        :param date snap_dt: _description_
-        :raises NotImplementedError: _description_
+        :param date snap_dt: the snap date of the file
+        :return str: the file name ending with .parquet, excluding filepath
         """
-        filepath = self.get_default_file_path(snap_dt)
-        df.to_parquet(filepath, **kws)
-        logging.info(f"Successfully saved file to {filepath}")
+        return f"{self.table}_{snap_dt}.parquet"
+    
+    def get_file_path(self, snap_dt: date) -> str:
+        """the absolute path to the parquet file
 
-    def _save_partitions(self, df: pyspark.sql.DataFrame, snap_dt: date, **kws):
-        """the pure logic to save pyspark dataframe to the system, without handling existing record problem
-
-        :param pyspark.sql.DataFrame df: _description_
-        :param date snap_dt: _description_
-        :raises NotImplementedError: _description_
+        :param date snap_dt: the snap date of the file
+        :return str: absolute file path
         """
-        filepath = self.get_default_file_path(snap_dt)
-        self.sc.save_parquet(df, filepath, **kws)
-        logging.info(f"Successfully saved file to {filepath}")
+        return (Path(self.dir) / self.get_filename(snap_dt)).as_posix()
+    
+    def get_file_path_with_protocol(self, snap_dt: date) -> str:
+        """the absolute path to the parquet file, including FS protocol
 
-    def get_existing_snap_dts(self) -> List[date]:
-        existing_files = get_file_list_pattern(
-            self.dir,
-            pattern = f"*{self.table}*",
-            include_dir = False  # don't include directory path
+        :param date snap_dt: the snap date of the file
+        :return str: e.g., in s3fs, return s3://bucket/file/path/to/your.parquet
+        """
+        return self._fs.unstrip_protocol(
+            name = self.get_file_path(snap_dt)
         )
+    
+    def _save(self, df: ibis.expr.types.Table, snap_dt: date, **kws):
+        """The pure logic to save ibis dataframe to the system, without handling existing record problem
 
-        existing_snaps = list(set(str2dt(match_date_from_str(f)) for f in existing_files))
+        :param ibis.expr.types.Table df: the ibis dataframe
+        :param date snap_dt: the snap date to save
+        """
+        save_ibis_to_parquet_on_fs(
+            df = df,
+            fs = self._fs,
+            filepath = self.get_file_path(snap_dt)
+        )
+                    
+    def get_existing_snap_dts(self) -> List[date]:
+        """get existing snap dates as a list
+
+        :return List[date]: list of snap dates
+        """
+        existing_files: List[str] = self._fs.ls(
+            path = self.dir, 
+            detail = False
+        )
+        filenames = [Path(file).name for file in existing_files]
+        existing_snaps = list(set(str2dt(match_date_from_str(f)) for f in filenames))
         existing_snaps.sort()
         return existing_snaps
+                        
+    def read(self, snap_dt: date, **kws) -> ibis.expr.types.Table:
+        """Read as ibis dataframe (one snapshot date) data
 
-    def read(self, snap_dt: date, **kws) -> pd.DataFrame:
+        :param snap_dt: snap_dt to load
+        :return:
+        """
+        filepath = self.get_file_path_with_protocol(snap_dt=snap_dt)
+        
+        return self._ibis_con.read_parquet(filepath, **kws)
+        
+    
+    def reads(self, snap_dts: List[date], **kws) -> ibis.expr.types.Table:
+        """reads as ibis dataframe (vertically concat of several given snap dates data)
+
+        :param snap_dts: list of snap dates to read
+        :return:
+        """
+        filepaths = (self.get_file_path_with_protocol(snap_dt) for snap_dt in snap_dts)
+        return self._ibis_con.read_parquet(filepaths, **kws)
+    
+    def read_pd(self, snap_dt: date, **kws) -> pd.DataFrame:
         """Read as pandas dataframe (one snapshot date) data
 
         :param snap_dt: snap_dt to load
         :return:
         """
-        filepath = self.get_default_file_path(snap_dt)
-        return pd.read_parquet(filepath, **kws)
-
-    def reads(self, snap_dts: List[date], partition_key: str = None, **kws) -> pd.DataFrame:
+        filepath = self.get_file_path(snap_dt=snap_dt)
+        return pd.read_parquet(
+            path = filepath,
+            engine = 'pyarrow',
+            filesystem = self._fs,
+            **kws
+        )
+    
+    def reads_pd(self, snap_dts: List[date], **kws) -> pd.DataFrame:
         """reads as pandas dataframe (vertically concat of several given snap dates data)
 
         :param snap_dts: list of snap dates to read
-        :param partition_key: when vertically combining, need partition key to tell apart, typically its something like SNAP_DT
-                if not specified, will bypass checking step
         :return:
         """
-        # do the checks to ensure successful concatenation
+                # do the checks to ensure successful concatenation
         li =  []
-        columns = pd.Index([])
-        for snap_dt in tqdm(snap_dts):
-            df_partition = self.read(snap_dt=snap_dt, **kws)
-            if partition_key is not None and partition_key not in df_partition.columns:
-                raise ValueError(f"{self.schema}.{self.table}: Partition Key {partition_key} not found in {snap_dt}")
-            if len(columns) > 0 and len(columns.union(df_partition.columns)) != len(columns):
-                # if new column set has a different length than the previous one, means the columns are not same across all the table partitions
-                raise ValueError(f"{self.schema}.{self.table}: Columns not consistent for snapshot {snap_dt}")
+        for snap_dt in snap_dts:
+            df_partition = self.read_pd(snap_dt=snap_dt, **kws)
             li.append(df_partition)
 
         return pd.concat(li, axis = 0, ignore_index = True)
-
-
-    def load(self, snap_dt: date, **kws) -> pyspark.sql.DataFrame:
-        """Read as spark dataframe (one snapshot date) data, and can also access from sc temporary view
-
-        :param snap_dt: snap_dt to load
-        :return:
-        """
-        filepath = self.get_default_file_path(snap_dt)
-        if hasattr(self, "sc"):
-            df = self.sc.read_parquet(filepath, **kws)
-            df.createOrReplaceTempView(f"{self.table}")
-            return df
-        else:
-            ValueError("No Spark Connector Specified, please call .setup() to bind a spark connector")
-
-    def loads(self, snap_dts: List[date], partition_key: str = None, **kws) -> pyspark.sql.DataFrame:
-        """reads as pyspark dataframe (vertically concat of several given snap dates data)
-
-        :param snap_dts: list of snap dates to read
-        :param partition_key: when vertically combining, need partition key to tell apart, typically its something like SNAP_DT
-                if not specified, will bypass checking step
-        :return:
-        """
-        file_paths = [self.get_default_file_path(snap_dt) for snap_dt in snap_dts]
-        if hasattr(self, "sc"):
-            df = self.sc.read_parquet(*file_paths, **kws) # spark will automatically stack all tables together
-            # do the partition check
-            if partition_key is not None and partition_key not in df.columns:
-                raise ValueError(f"{self.schema}.{self.table}: Partition Key {partition_key} not found")
-
-            # pick up random snapshot data to check the columns are consistent
-            one_columns = self.load_random_snap().columns
-            if len(one_columns) != len(pd.Index(one_columns).union(df.columns)):
-                raise ValueError(f"{self.schema}.{self.table}: Columns not consistent in one of the snapshot data")
-
-            df.createOrReplaceTempView(f"{self.table}")
-            return df
-        else:
-            ValueError("No Spark Connector Specified, please call .setup() to bind a spark connector")
-
+    
     def delete(self, snap_dt: date):
         """Delete a snap shot dataframe
 
         :param snap_dt: which snap date to delete
         :return:
         """
-        filepath = self.get_default_file_path(snap_dt)
-        if os.path.exists(filepath):
-            if os.path.isdir(filepath):
-                # parquet partitions
-                shutil.rmtree(filepath, ignore_errors = True)
-            else:
-                os.remove(filepath)
+        filepath = self.get_file_path(snap_dt=snap_dt)
+        if self._fs.exists(filepath):
+            self._fs.rm_file(path = filepath)
 
     def drop(self):
         """drop the whole table
 
         :return:
         """
-        shutil.rmtree(self.dir)
-
-    def duplicate(self, dst_schema: str, dst_table: str) -> SnapshotDataManagerLocalFS:
-        new = SnapshotDataManagerLocalFS(schema = dst_schema, table = dst_table)
-        copy_tree(self.dir, new.dir)
-        return new
-
-    def disk_space(self, snap_dt, unit='MB') -> float:
-        """get the size of the snap date file (pandas) or folder (pyspark partitions)
-
-        :param snap_dt:
-        :param unit: {KB, MB, GB}
-        """
-        f = self.get_default_file_path(snap_dt)
-        if os.path.isfile(f):
-            size_bytes = os.path.getsize(f)
-        else:
-            size_bytes = sum(p.stat().st_size for p in Path(f).rglob('*'))
-
-        scale = {'KB': 1, 'MB': 2, 'GB': 3}.get(unit, 0)
-        size = size_bytes / (1024 ** scale)
-        return size
-
-    def is_valid(self, snap_dt, size_threshold: float = 0.5) -> bool:
-        """Check if the file is valid
-        
-        """
-        f = self.get_default_file_path(snap_dt)
-        if os.path.isdir(f):
-            # if it is a folder (partition files), it should has a .__SUCCESS.crc file generated by pyspark
-            return "._SUCCESS.crc" in os.listdir(f)
-        else:
-            # if a single file, the size must be exceed the valid threshold
-            return self.disk_space(snap_dt, unit = 'MB') > size_threshold
-        
-        
-class SnapshotDataManagerObjStorage(SnapshotDataManagerBase):
-    """files are saved as object storage under each schema.table
-    """
-
-    @classmethod
-    def setup(cls, bucket: str,  root_dir: str, obja: ObjStorage, spark_connector: SparkConnector = None, default_engine:str = 'pandas'):
-        super(SnapshotDataManagerObjStorage, cls).setup(
-            spark_connector = spark_connector,
-            default_engine = default_engine
-        )
-        cls.bucket = bucket
-        cls.ROOT_DIR = root_dir if not root_dir.startswith("/") else root_dir[1:]
-        cls.obja = obja
-        cls.obja.enter_bucket(bucket_name=bucket)
-        
-    def exist(self) -> bool:
-        """whether the schema and table exist, or ready to do operations
-        for DB based, usually it detects whether the table shema structure is created
-
-        :return bool: whether the table and schema exists and ready
-        """
-        return True
-    
-    def __init__(self, schema:str, table:str):
-        """virtual database management interface
-
-        :param schema: the virtual schema
-        :param table:  the virtual table under each schema
-        """
-        super().__init__(schema = schema, table = table)
-        dir = os.path.join(self.ROOT_DIR, schema, table)
-        self.dir = dir  # the root path of the table under each schema
-
-    def get_filename(self, snap_dt: date) -> str:
-        return f"{self.table}_{snap_dt}.parquet"
-
-    def get_default_file_path(self, snap_dt: date) -> str:
-        return os.path.join(self.dir, self.get_filename(snap_dt))
-    
-    def get_file_path_with_obj_storage_prefix(self, snap_dt: date) -> str:
-        return f"{self.get_uri_protocol}://{self.bucket}/{self.get_default_file_path(snap_dt=snap_dt)}"
-
-    def _save(self, df: pd.DataFrame, snap_dt: date, **kws):
-        """The pure logic to save pandas dataframe to the system, without handling existing record problem
-
-        :param pd.DataFrame df: _description_
-        :param date snap_dt: _description_
-        :raises NotImplementedError: _description_
-        """
-        self.obja.save_parquet(
-            df = df,
-            remote_path = self.get_default_file_path(snap_dt=snap_dt),
-            **kws
-        )
-    
-    def get_existing_snap_dts(self) -> List[date]:
-        df = self.obja.list_objs(remote_path = self.dir)
-        if df is None:
-            return []
-        existing_snaps = list(set(map(
-            str2dt,
-            (
-                df
-                .loc[
-                    (df['Key'].str.startswith(pat = f"{self.dir}/"))
-                    & (df['Key'].str.endswith(pat = ".parquet")), 
-                    'Key']
-                .str.replace(self.dir, "")
-                .apply(match_date_from_str)
-                .tolist()
+        if self.exist():
+            self._fs.rm(
+                path = self.dir,
+                recursive = True,
+                maxdepth = None
             )
-        )))
-        existing_snaps.sort()
-        return existing_snaps
-    
-    def read(self, snap_dt: date, **kws) -> pd.DataFrame:
-        """Read as pandas dataframe (one snapshot date) data
 
-        :param snap_dt: snap_dt to load
-        :return:
-        """
-        filepath = self.get_default_file_path(snap_dt=snap_dt)
-        return self.obja.read_parquet(remote_path = filepath, **kws)
-    
-
-    def reads(self, snap_dts: List[date], partition_key: str = None, **kws) -> pd.DataFrame:
-        """reads as pandas dataframe (vertically concat of several given snap dates data)
-
-        :param snap_dts: list of snap dates to read
-        :param partition_key: when vertically combining, need partition key to tell apart, typically its something like SNAP_DT
-                if not specified, will bypass checking step
-        :return:
-        """
-        # do the checks to ensure successful concatenation
-        li =  []
-        columns = pd.Index([])
-        for snap_dt in tqdm(snap_dts):
-            df_partition = self.read(snap_dt=snap_dt, **kws)
-            if partition_key is not None and partition_key not in df_partition.columns:
-                raise ValueError(f"{self.schema}.{self.table}: Partition Key {partition_key} not found in {snap_dt}")
-            if len(columns) > 0 and len(columns.union(df_partition.columns)) != len(columns):
-                # if new column set has a different length than the previous one, means the columns are not same across all the table partitions
-                raise ValueError(f"{self.schema}.{self.table}: Columns not consistent for snapshot {snap_dt}")
-            li.append(df_partition)
-
-        return pd.concat(li, axis = 0, ignore_index = True)
-    
-    def load(self, snap_dt: date, **kws) -> pyspark.sql.DataFrame:
-        """Read as spark dataframe (one snapshot date) data, and can also access from sc temporary view
-
-        :param snap_dt: snap_dt to load
-        :return:
-        """
-        filepath = self.get_file_path_with_obj_storage_prefix(snap_dt)
-        if hasattr(self, "sc"):
-            df = self.sc.read_parquet(filepath, **kws)
-            df.createOrReplaceTempView(f"{self.table}")
-            return df
-        else:
-            ValueError("No Spark Connector Specified, please call .setup() to bind a spark connector")
-    
-    def loads(self, snap_dts: List[date], partition_key: str = None, **kws) -> pyspark.sql.DataFrame:
-        """reads as pyspark dataframe (vertically concat of several given snap dates data)
-
-        :param snap_dts: list of snap dates to read
-        :param partition_key: when vertically combining, need partition key to tell apart, typically its something like SNAP_DT
-                if not specified, will bypass checking step
-        :return:
-        """
-        file_paths = [self.get_file_path_with_obj_storage_prefix(snap_dt) for snap_dt in snap_dts]
-        if hasattr(self, "sc"):
-            df = self.sc.read_parquet(*file_paths, **kws) # spark will automatically stack all tables together
-            # do the partition check
-            if partition_key is not None and partition_key not in df.columns:
-                raise ValueError(f"{self.schema}.{self.table}: Partition Key {partition_key} not found")
-
-            # pick up random snapshot data to check the columns are consistent
-            one_columns = self.load_random_snap().columns
-            if len(one_columns) != len(pd.Index(one_columns).union(df.columns)):
-                raise ValueError(f"{self.schema}.{self.table}: Columns not consistent in one of the snapshot data")
-
-            df.createOrReplaceTempView(f"{self.table}")
-            return df
-        else:
-            ValueError("No Spark Connector Specified, please call .setup() to bind a spark connector")
-    
-    def delete(self, snap_dt: date):
-        """Delete a snap shot dataframe, could be partitions
-
-        :param snap_dt: which snap date to delete
-        :return:
-        """
-        filepath = self.get_default_file_path(snap_dt=snap_dt)
-        if self.obja.list_objs(filepath) is None or len(self.obja.list_objs(filepath)) == 1:
-            # it is not folder
-            self.obja.delete_obj(remote_path = filepath)
-        else:
-            # it is a folder, i.e., partitions
-            self.obja.delete_folder(remote_folder_path = filepath)
-
-    def drop(self):
-        """drop the whole table
-
-        :return:
-        """
-        self.obja.delete_folder(remote_folder_path = self.dir)
-
-    def duplicate(self, dst_schema: str, dst_table: str) -> SnapshotDataManagerObjStorage:
-        """duplicate the existing schema.table to new one, the existing one will be kept
+    def migrate(self, dst_schema: str, dst_table: str):
+        """move from the existing schema.table to new one, the existing one will be deleted
 
         :param dst_schema: destination schema
         :param dst_table: destination table
         :return:
         """
-        new = SnapshotDataManagerObjStorage(schema = dst_schema, table = dst_table)
-        for snap_dt in tqdm(self.get_existing_snap_dts()):
-            from_filename = self.get_default_file_path(snap_dt=snap_dt)
-            to_filename = new.get_default_file_path(snap_dt=snap_dt)
-            self.obja.copy_obj(
-                from_path = from_filename,
-                to_path = to_filename
-            )
+        new = self.duplicate(dst_schema, dst_table)
+        self.drop()
         return new
+
+    def duplicate(self, dst_schema: str, dst_table: str) -> SnapshotDataManagerFileSystem:
+        """duplicate the existing schema.table to new one, the existing one will be kept
+
+        reference here: https://filesystem-spec.readthedocs.io/en/latest/copying.html
+        :param dst_schema: destination schema
+        :param dst_table: destination table
+        :return:
+        """
+        new = type(self)(
+            schema = dst_schema, 
+            table = dst_table
+        )
+        # copy folder to new location
+        self._fs.cp(
+            path1 = str(Path(self.dir) / "_")[:-1],
+            path2 = str(Path(new.dir) / "_")[:-1],
+            recursive = True,
+            maxdepth = None
+        )
         
+
     def disk_space(self, snap_dt, unit='MB') -> float:
         """get the size of the snap date on disk
 
         :param snap_dt:
         :param unit: {KB, MB, GB}
         """
-        #key = self.obja.get_obj(remote_path=self.get_default_file_path(snap_dt=snap_dt))
-        #size_bytes = key['ContentLength'] # in kb
-        size_bytes = self.obja.list_objs(remote_path=self.get_default_file_path(snap_dt=snap_dt))['Size'].sum()
+        filepath = self.get_file_path(snap_dt=snap_dt)
+        size_bytes = self._fs.du(
+            path = filepath,
+            total = True,
+            maxdepth = None
+        )
         scale = {'KB': 1, 'MB': 2, 'GB': 3}.get(unit, 0)
         size = size_bytes / (1024 ** scale)
         return size
-    
-    def is_valid(self, snap_dt, size_threshold: float = 0.5) -> bool:
-        """Check if the file is valid
-        
-        """
-        return self.disk_space(snap_dt, unit = 'MB') > size_threshold
-    
     
         
 class SnapshotDataManagerWarehouseMixin(SnapshotDataManagerBase):
@@ -740,29 +478,23 @@ class SnapshotDataManagerWarehouseMixin(SnapshotDataManagerBase):
             col_schemas = col_schemas,
             **settings
         )
-        
-    def get_schema(self) -> Schema:
+    
+    def get_schema(self) -> ibis.expr.schema.Schema:
         """Check dtypes of the given schema/dataset
 
-        :return:
+        :return: the ibis schema of the given table
         """
         return self.get_dtypes(
             schema = self.schema,
             table = self.table
         )
-        
-    def count(self, snap_dt: date) -> int:
-        if not self.exist():
-            return 0
-        table = self.get_table(
-            schema = self.schema,
-            table = self.table
-        )
-        return table.count(
-            where = (table[self.snap_dt_key] == snap_dt)
-        ).to_pandas() # convert to a scalar number
-        
+    
+    
     def get_existing_snap_dts(self) -> List[date]:
+        """get existing snap dates as a list
+
+        :return List[date]: list of snap dates
+        """
         if not self.exist():
             return []
         existing_snaps = (
@@ -780,9 +512,9 @@ class SnapshotDataManagerWarehouseMixin(SnapshotDataManagerBase):
             str2dt(dt.date()) 
             for dt in pd.to_datetime(existing_snaps[self.snap_dt_key]).dt.to_pydatetime()
         )
-            
-    def read(self, snap_dt: date, **kws) -> pd.DataFrame:
-        """Read as pandas dataframe (one snapshot date) data
+    
+    def read(self, snap_dt: date, **kws) -> ibis.expr.types.Table:
+        """Read as ibis dataframe (one snapshot date) data
 
         :param snap_dt: snap_dt to load
         :return:
@@ -794,10 +526,10 @@ class SnapshotDataManagerWarehouseMixin(SnapshotDataManagerBase):
         df = table.filter(table[self.snap_dt_key] == snap_dt)
         if 'columns' in kws:
             df = df.select(*kws['columns'])
-        return df.to_pandas()
+        return df
     
-    def reads(self, snap_dts: List[date], **kws) -> pd.DataFrame:
-        """reads as pandas dataframe (vertically concat of several given snap dates data)
+    def reads(self, snap_dts: List[date], **kws) -> ibis.expr.types.Table:
+        """reads as ibis dataframe (vertically concat of several given snap dates data)
 
         :param snap_dts: list of snap dates to read
         :return:
@@ -809,7 +541,23 @@ class SnapshotDataManagerWarehouseMixin(SnapshotDataManagerBase):
         df = table.filter(table[self.snap_dt_key].isin(snap_dts))
         if 'columns' in kws:
             df = df.select(*kws['columns'])
-        return df.to_pandas()
+        return df
+    
+    def read_pd(self, snap_dt: date, **kws) -> pd.DataFrame:
+        """Read as pandas dataframe (one snapshot date) data
+
+        :param snap_dt: snap_dt to load
+        :return:
+        """
+        return self.read(snap_dt=snap_dt, **kws).to_pandas()
+    
+    def reads_pd(self, snap_dts: List[date], **kws) -> pd.DataFrame:
+        """reads as pandas dataframe (vertically concat of several given snap dates data)
+
+        :param snap_dts: list of snap dates to read
+        :return:
+        """
+        return self.reads(snap_dts=snap_dts, **kws).to_pandas()
 
     def drop(self):
         """drop the whole table

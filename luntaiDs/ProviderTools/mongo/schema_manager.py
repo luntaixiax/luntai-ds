@@ -1,5 +1,4 @@
 import pymongo
-from collections import OrderedDict
 from pymongo.mongo_client import MongoClient
 from luntaiDs.CommonTools.schema_manager import BaseSchemaManager
 from luntaiDs.CommonTools.dtyper import DSchema
@@ -8,11 +7,32 @@ from luntaiDs.CommonTools.dtyper import DSchema
 class MongoSchemaManager(BaseSchemaManager):
     
     def __init__(self, mongo_client: MongoClient, database: str, collection: str):
+        """schema manager for mongo db
+        
+        the mongodb implementation works like this, under given database/collection
+        mongodb
+            database
+                collection
+                    entry1: schema A, table 1, config
+                    entry2: schema A, table 2, config
+                    entry3: schema B, table 1, config
+                    ...
+
+        :param MongoClient mongo_client: mongo db python connector object
+        :param str database: the mongo db database name to save the table config
+        :param str collection: the mongo db table name to save the table config
+        """
         self._mongo_client = mongo_client
         self.database = database
         self.collection = collection
     
     def write_raw(self, schema: str, table: str, content: dict):
+        """handle how to write raw (dictionary) config into given schema/table
+
+        :param str schema: the schema name
+        :param str table: the table name
+        :param dict content: the dict version of Dschema object
+        """
         # add more keys
         content = {
             'schema': schema, 
@@ -31,6 +51,12 @@ class MongoSchemaManager(BaseSchemaManager):
         )
     
     def read_raw(self, schema: str, table: str) -> dict:
+        """handle how to write read (dictionary) config from given schema/table
+
+        :param str schema: the schema name
+        :param str table: the table name
+        :return dict: the dict version of Dschema object 
+        """
         db = self._mongo_client[self.database]
         collection = db[self.collection]
         record = (

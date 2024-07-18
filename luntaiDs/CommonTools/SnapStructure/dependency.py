@@ -6,7 +6,6 @@ import time
 from typing import List, Literal
 from collections import OrderedDict
 import pandas as pd
-import pyspark
 from luntaiDs.CommonTools.SnapStructure.structure import SnapshotDataManagerBase
 from luntaiDs.CommonTools.SnapStructure.tools import get_future_period_ends, get_past_period_ends
 from luntaiDs.CommonTools.utils import str2dt, offset_date

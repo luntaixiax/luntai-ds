@@ -3,6 +3,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 import ibis
 import pandas as pd
+import pyarrow as pa
 from google.oauth2 import service_account
 from luntaiDs.CommonTools.dbapi import baseDbInf
 from luntaiDs.CommonTools.dtyper import DSchema
@@ -62,7 +63,9 @@ class WarehouseHandlerBQSQL(BaseWarehouseHandler):
     def connect(cls, db_conf: BigQuery, **settings):
         cls._db_conf = db_conf
         if db_conf.credentials_path:
-            creds = service_account.Credentials.from_service_account_file(db_conf.credentials_path)
+            creds = service_account.Credentials.from_service_account_file(
+                db_conf.credentials_path
+            )
         else:
             creds = None
         cls._ops = ibis.bigquery.connect(
@@ -176,6 +179,24 @@ class WarehouseHandlerBQSQL(BaseWarehouseHandler):
             destination = f"{schema}.{table}",
             **kws
         )
+        
+    def save_ibis(self, df: ibis.expr.types.Table, schema: str, table: str, **kws):
+        """The pure logic to save ibis dataframe to the system, without handling existing record problem
+
+        :param ibis.expr.types.Table df: ibis table
+        :param str schema: schema/database
+        :param str table: table name
+        """
+        chunk_size = kws.get('chunk_size', 1048576)
+        df_arr: pa.RecordBatchReader = df.to_pyarrow_batches(chunk_size = chunk_size)
+        for df_batch in df_arr:
+            df_: pa.Table = pa.Table.from_batches([df_batch], schema = df_batch.schema)
+            self._ops.insert(
+                name = table,
+                obj = df_,
+                database = schema,
+                **kws
+            )
         
     def delete_table(self, schema: str, table: str):
         """drop whole table
