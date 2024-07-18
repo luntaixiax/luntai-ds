@@ -2,8 +2,6 @@ from __future__ import annotations
 from typing import List
 from pathlib import Path
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 import fsspec
 import logging
 import ibis

@@ -4,10 +4,8 @@ from typing import List
 import pyarrow as pa
 import pyarrow.parquet as pq
 import ibis
-from luntaiDs.CommonTools.SnapStructure.tools import match_date_from_str
 from luntaiDs.CommonTools.SnapStructure.structure import SnapshotDataManagerFileSystem
 from luntaiDs.ProviderTools.ssh.sftp import SFTPFileSystem
-
 
 
 class SnapshotDataManagerSFTP(SnapshotDataManagerFileSystem):

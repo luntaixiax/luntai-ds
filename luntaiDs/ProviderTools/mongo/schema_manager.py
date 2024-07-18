@@ -1,7 +1,6 @@
 import pymongo
 from pymongo.mongo_client import MongoClient
 from luntaiDs.CommonTools.schema_manager import BaseSchemaManager
-from luntaiDs.CommonTools.dtyper import DSchema
 
 
 class MongoSchemaManager(BaseSchemaManager):

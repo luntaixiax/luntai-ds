@@ -15,16 +15,15 @@ from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 import time
 from tqdm.auto import tqdm
-from luntaiDs.CommonTools.settings import SETTINGS
 
 
 def str2dt(dt_str: Union[str, date], format = "%Y-%m-%d") -> date:
     if isinstance(dt_str, str):
         return datetime.strptime(dt_str, format).date()
-    if isinstance(dt_str, date):
-        return dt_str
     if isinstance(dt_str, datetime):
         return dt_str.date()
+    if isinstance(dt_str, date):
+        return dt_str
     else:
         return dt_str
 

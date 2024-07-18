@@ -1,4 +1,4 @@
-from typing import List, Dict, Union
+from typing import Union
 import ibis
 import pandas as pd
 import logging
