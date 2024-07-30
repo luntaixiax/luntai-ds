@@ -7,7 +7,7 @@ from scipy.stats import ks_2samp
 from sklearn.preprocessing import label_binarize
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, top_k_accuracy_score, \
         average_precision_score, f1_score, log_loss, precision_score, recall_score, \
-        roc_auc_score, roc_curve
+        roc_auc_score, roc_curve, precision_recall_curve
 from sklearn.metrics._ranking import _binary_clf_curve
 
 def ks_stat(y, yhat):
@@ -260,9 +260,75 @@ class SKMultiClfMetricsCalculator:
             raise ValueError("only support micro or macro aggregation")
         
         return pd.DataFrame({
-            'threshold': threshold,
-            'fpr': fpr,
-            'tpr': tpr
-        })
+                'threshold': threshold,
+                'fpr': fpr,
+                'tpr': tpr
+            })
         
+    def precision_recall_curves(self) -> Dict[int, pd.DataFrame]:
+        """precision recall curves
+
+        :return Dict[int, pd.DataFrame]: {
+                cls_idx: DataFrame[threshold, precision, recall]
+            }
+        """
+        curves = dict()
+        for cls_idx in range(self.num_cls):
+            metrics = self.binary_metrics_by_threshold(cls_idx)
+            curves[cls_idx] = metrics[['threshold', 'precision', 'recall']]
+        return curves
         
+    def precision_recall_curve_agg(self, agg: Literal['micro', 'macro']) -> pd.DataFrame:
+        """get averaged precision-recall curve
+        
+        https://scikit-learn.org/stable/auto_examples/model_selection/plot_roc.html#one-vs-rest-multiclass-roc
+        
+        In a multi-class classification setup with highly imbalanced classes, 
+            micro-averaging is preferable over macro-averaging
+
+        :param Literal[&#39;micro&#39;, &#39;macro&#39;] agg: aggregation method
+        :return pd.DataFrame: containing [threshold, precision, recall]
+        """
+        y_true_binarized = label_binarize(
+            self.y_true, 
+            classes = list(range(self.y_pred_probs.shape[1]))
+        )
+        if agg == 'micro':
+            precision, recall, threshold = precision_recall_curve(
+                y_true_binarized.ravel(), 
+                self.y_pred_probs.ravel(),
+            )
+            threshold = np.array(list(threshold) + [1])
+
+        elif agg == 'macro':
+            precisions, recalls, thresholds = dict(), dict(), dict()
+            for i in range(self.num_cls):
+                precisions[i], recalls[i], thresholds[i] = precision_recall_curve(
+                    y_true_binarized[:, i], 
+                    self.y_pred_probs[:, i],
+                )
+                # precision and recall have n+1 elements while threshold only have n
+                # precision[n+1] = 1, recall[n+1] = 0
+                thresholds[i] = np.array(list(thresholds[i]) + [1])
+                    
+    
+            threshold = np.linspace(0.0, 1.0, 2500)
+            precision = np.zeros_like(threshold)
+            recall = np.zeros_like(threshold)
+            for i in range(self.num_cls):
+                # linear interpolation
+                precision += np.interp(threshold, thresholds[i], precisions[i]) 
+                recall += np.interp(threshold, thresholds[i], recalls[i])
+                
+            # Average it and compute AUC
+            precision /= self.num_cls
+            recall /= self.num_cls
+            
+        else:
+            raise ValueError("only support micro or macro aggregation")
+        
+        return pd.DataFrame({
+                'threshold': threshold,
+                'precision': precision,
+                'recall': recall
+            })
