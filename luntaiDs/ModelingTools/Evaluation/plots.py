@@ -137,12 +137,12 @@ def chart_optbin(bin_r: pd.DataFrame, metric: str = 'Event rate', size: tuple = 
     return fig_bin
 
 
-def chart_roc_curve(*metric_dfs: pd.DataFrame, names:List[str] = None, slider_pos:int = 0, size: tuple = (1000, 500), title ='ROC Curve') -> layout:
+def chart_roc_curve(*metric_dfs: pd.DataFrame, names:List[str] = None, 
+            size: tuple = (1000, 500), title ='ROC Curve') -> layout:
     """ROC curve on different models for comparison
 
     :param metric_dfs: metrics at each threshold, columns: [threshold, tpr, fpr]
     :param names: names for each metric dfs, use as labels in the chart to differientiate each curve
-    :param slider_pos: if not None, will add a slider for threshold. and the slider_pos indicates which metrics dataset for slider loc
     :param size: figsize
     :param title: title of the chart
     :return: ROC curve with a slider for threshold
@@ -156,35 +156,41 @@ def chart_roc_curve(*metric_dfs: pd.DataFrame, names:List[str] = None, slider_po
         fig_roc.line("fpr", "tpr", source = source_roc, color=next(colors), width=3, legend_label=name)
     fig_roc.add_tools(HoverTool(tooltips=[("threshold", "@threshold"), ("fpr", "@fpr"), ("tpr", "@tpr")]))
 
-    if slider_pos is not None:
+    with open(os.path.join(os.path.dirname(__file__), "chart_api_js/roc_standalone_callback.js"), "r") as obj:
+        callback_ = obj.read()
+        
+    slider = Slider(start=0.0, end=1.0, value=1, step=0.0001, 
+        title='Threshold', format='0[.]0000')
+    for slider_pos, slider_df in enumerate(metric_dfs):
         # will add a slider to the relevant curve
-        slider_df = metric_dfs[slider_pos]
-        initial = slider_df.iloc[len(slider_df) // 2, :]
-        df_anno = pd.DataFrame({'threshold': initial['threshold'], 'tpr': [initial['tpr']], 'fpr' : [initial['fpr']]})
+        df_anno = pd.DataFrame({
+            'threshold': [1], 
+            'tpr': [0], 
+            'fpr' : [0]
+        })
         source_anno = ColumnDataSource(df_anno)
-        fig_roc.circle("fpr", "tpr", source = source_anno, color='black', fill_color="#2B699D", size = 10)
-
-        with open(os.path.join(os.path.dirname(__file__), "chart_api_js/roc_standalone_callback.js"), "r") as obj:
-            callback = obj.read()
+        fig_roc.circle("fpr", "tpr", source = source_anno, 
+            color='black', fill_color="#2B699D", size = 10)
+       
         callback = CustomJS(
-            args=dict(source_roc_test=ColumnDataSource(slider_df), source_anno=source_anno),
-            code=callback
+            args=dict(
+                source_roc_test=ColumnDataSource(slider_df), 
+                source_anno=source_anno
+            ),
+            code=callback_
         )
-        slider = Slider(start=0.0, end=1.0, value=initial['threshold'], step=0.001, title='Threshold', format='0[.]000')
         slider.js_on_change('value', callback)
-        layout = Column(slider, fig_roc)
-        return layout
-
-    return fig_roc
-
+    
+    layout = Column(slider, fig_roc)
+    return layout
 
 
-def chart_pr_curve(*metric_dfs: pd.DataFrame, names:List[str] = None, slider_pos:int = 0, size: tuple = (1000, 500), title ='PR Curve') -> layout:
+def chart_pr_curve(*metric_dfs: pd.DataFrame, names:List[str] = None, 
+        size: tuple = (1000, 500), title ='PR Curve') -> layout:
     """Precision - Recall curve on different models for comparison
 
     :param metric_dfs: metrics at each threshold, columns: [threshold, tpr, fpr]
     :param names: names for each metric dfs, use as labels in the chart to differientiate each curve
-    :param slider_pos: if not None, will add a slider for threshold. and the slider_pos indicates which metrics dataset for slider loc
     :param size: figsize
     :param title: title of the chart
     :return: PR curve with a slider for threshold
@@ -198,27 +204,35 @@ def chart_pr_curve(*metric_dfs: pd.DataFrame, names:List[str] = None, slider_pos
         fig_pr.line("recall", "precision", source=source_roc, color=next(colors), width=3, legend_label=name)
     fig_pr.add_tools(HoverTool(tooltips=[("threshold", "@threshold"), ("recall", "@recall"), ("precision", "@precision")]))
 
-    if slider_pos is not None:
+    with open(os.path.join(os.path.dirname(__file__), "chart_api_js/pr_standalone_callback.js"), "r") as obj:
+        callback_ = obj.read()
+    
+    slider = Slider(start=0.0, end=1.0, value=1, step=0.0001, 
+            title='Threshold', format='0[.]0000')
+    
+    for slider_pos, slider_df in enumerate(metric_dfs):
         # will add a slider to the relevant curve
-        slider_df = metric_dfs[slider_pos]
-        initial = slider_df.iloc[len(slider_df) // 2, :]
-        df_anno = pd.DataFrame({'threshold': initial['threshold'], 'recall': [initial['recall']], 'precision': [initial['precision']]})
+        df_anno = pd.DataFrame({
+            'threshold': [1], 
+            'recall': [0], 
+            'precision' : [1]
+        })
         source_anno = ColumnDataSource(df_anno)
-        fig_pr.circle("recall", "precision", source=source_anno, color='black', fill_color="#2B699D", size=10)
+        fig_pr.circle("recall", "precision", source=source_anno, 
+            color='black', fill_color="#2B699D", size=10)
 
-        with open(os.path.join(os.path.dirname(__file__), "chart_api_js/pr_standalone_callback.js"), "r") as obj:
-            callback = obj.read()
         callback = CustomJS(
-            args=dict(source_pr_test=ColumnDataSource(slider_df), source_anno=source_anno),
-            code=callback
+            args=dict(
+                source_pr_test=ColumnDataSource(slider_df), 
+                source_anno=source_anno
+            ),
+            code=callback_
         )
-        slider = Slider(start=0.0, end=1.0, value=initial['threshold'], step=0.001, title='Threshold', format='0[.]000')
+        
         slider.js_on_change('value', callback)
-        layout = Column(slider, fig_pr)
-        return layout
-
-    return fig_pr
-
+    
+    layout = Column(slider, fig_pr)
+    return layout
 
 
 def chart_pr_threshold(metrics: pd.DataFrame, size: tuple = (1000, 500), title: str ='PR Tradeoff Curve') -> Figure:
