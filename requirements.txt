@@ -33,6 +33,7 @@ lightgbm==4.0.0
 optbinning==0.17.3
 scikit-optimize==0.9.0
 optuna==3.6.1
+optuna_integration==3.6.0
 optuna-dashboard==0.15.1
 shap==0.46.0
 email-validator==2.2.0
