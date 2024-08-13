@@ -1,6 +1,6 @@
 from pathlib import Path
 import pyarrow.parquet as pq
-from typing import List, Dict, Union
+from typing import List, Dict, Tuple, Union
 from fsspec import AbstractFileSystem
 import ibis
 import pandas as pd
@@ -29,14 +29,15 @@ class _BaseModelDataRegistry:
         """
         raise NotImplementedError("")
 
-    def fetch(self, data_id: str, target_col: str = None):
+    def fetch(self, data_id: str) -> Tuple[
+            Union[ibis.expr.types.Table | pd.DataFrame], 
+            Union[ibis.expr.types.Table | pd.DataFrame]
+        ]:
         """fetch training/testing dataset
 
         :param str data_id: data id to be fetched
-        :param str target_col: the target column, defaults to None.
-        :return:
-            - if target_col given, will split to [X_train, y_train, X_test, y_test]
-            - if target_col not given, will just split to [train_ds, test_ds]
+        :return Tuple[Union[ibis.expr.types.Table | pd.DataFrame], Union[ibis.expr.types.Table | pd.DataFrame]]:
+            [train_ds, test_ds]
         """
         raise NotImplementedError("")
 
@@ -131,14 +132,15 @@ class ModelDataRegistryFileSystem(_BaseModelDataRegistry):
             raise TypeError(f"train_ds/test_ds must be either ibis or pandas dataframe")
 
 
-    def fetch(self, data_id: str, target_col: str = None):
+    def fetch(self, data_id: str) -> Tuple[
+            Union[ibis.expr.types.Table | pd.DataFrame], 
+            Union[ibis.expr.types.Table | pd.DataFrame]
+        ]:
         """fetch training/testing dataset
 
         :param str data_id: data id to be fetched
-        :param str target_col: the target column, defaults to None.
-        :return:
-            - if target_col given, will split to [X_train, y_train, X_test, y_test]
-            - if target_col not given, will just split to [train_ds, test_ds]
+        :return Tuple[Union[ibis.expr.types.Table | pd.DataFrame], Union[ibis.expr.types.Table | pd.DataFrame]]:
+            [train_ds, test_ds]
         """
         assert data_id in self.get_existing_ids(), f"data id {data_id} does not exist"
         
@@ -172,14 +174,7 @@ class ModelDataRegistryFileSystem(_BaseModelDataRegistry):
                 )
                 test_ds = ibis.memtable(test_arr)
             
-        if target_col:
-            X_train = train_ds.drop(target_col)
-            X_test = test_ds.drop(target_col)
-            y_train = train_ds[target_col]
-            y_test = test_ds[target_col]
-            return X_train, y_train, X_test, y_test
-        else:
-            return train_ds, test_ds
+        return train_ds, test_ds
 
     def remove(self, data_id: str):
         """remove dataset from registry
@@ -267,14 +262,15 @@ class _ModelDataRegistryWarehouse(_BaseModelDataRegistry):
         )
             
 
-    def fetch(self, data_id: str, target_col: str = None):
+    def fetch(self, data_id: str) -> Tuple[
+            Union[ibis.expr.types.Table | pd.DataFrame], 
+            Union[ibis.expr.types.Table | pd.DataFrame]
+        ]:
         """fetch training/testing dataset
 
         :param str data_id: data id to be fetched
-        :param str target_col: the target column, defaults to None.
-        :return:
-            - if target_col given, will split to [X_train, y_train, X_test, y_test]
-            - if target_col not given, will just split to [train_ds, test_ds]
+        :return Tuple[Union[ibis.expr.types.Table | pd.DataFrame], Union[ibis.expr.types.Table | pd.DataFrame]]:
+            [train_ds, test_ds]
         """
         table = self.get_table()
         train_ds = (
@@ -287,11 +283,4 @@ class _ModelDataRegistryWarehouse(_BaseModelDataRegistry):
             .filter((table[self.DATA_ID_COL] == data_id) & (table[self.TRAIN_TEST_IND_COL] == False))
             .drop(self.DATA_ID_COL, self.TRAIN_TEST_IND_COL)
         )
-        if target_col:
-            X_train = train_ds.drop(target_col)
-            X_test = test_ds.drop(target_col)
-            y_train = train_ds[target_col]
-            y_test = test_ds[target_col]
-            return X_train, y_train, X_test, y_test
-        else:
-            return train_ds, test_ds
+        return train_ds, test_ds
