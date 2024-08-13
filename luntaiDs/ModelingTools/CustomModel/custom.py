@@ -1,22 +1,12 @@
-from functools import partial
-from typing import Callable
-
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import StratifiedGroupKFold
-from sklearn.base import is_classifier
-from sklearn.metrics import check_scoring
-from sklearn.utils import check_random_state
-from sklearn.model_selection import check_cv
 from skopt import BayesSearchCV
-from optuna import logging
-from optuna import samplers
-from optuna import study as study_module
-from optuna.integration.sklearn import OptunaSearchCV, _logger, _num_samples, _safe_indexing, _Objective, _check_fit_params, _convert_old_distribution_to_new_distribution
-from optuna.trial import Trial
+from optuna.integration.sklearn import OptunaSearchCV
+from optuna.distributions import _convert_old_distribution_to_new_distribution
 
 from luntaiDs.ModelingTools.utils.support import make_present_col_selector
 
