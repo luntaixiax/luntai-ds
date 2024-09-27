@@ -303,14 +303,16 @@ class SnapshotDataManagerFileSystem(SnapshotDataManagerBase):
 
         :return List[date]: list of snap dates
         """
-        existing_files: List[str] = self._fs.ls(
-            path = self.dir, 
-            detail = False
-        )
-        filenames = [Path(file).name for file in existing_files]
-        existing_snaps = list(set(str2dt(match_date_from_str(f)) for f in filenames))
-        existing_snaps.sort()
-        return existing_snaps
+        if self.exist():
+            existing_files: List[str] = self._fs.ls(
+                path = self.dir, 
+                detail = False
+            )
+            filenames = [Path(file).name for file in existing_files]
+            existing_snaps = list(set(str2dt(match_date_from_str(f)) for f in filenames))
+            existing_snaps.sort()
+            return existing_snaps
+        return []
                         
     def read(self, snap_dt: date, **kws) -> ibis.expr.types.Table:
         """Read as ibis dataframe (one snapshot date) data
